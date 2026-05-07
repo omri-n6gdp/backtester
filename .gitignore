@@ -5,3 +5,14 @@ __pycache__/
 .venv/
 results.db
 .backtester/
+
+# macOS clutter
+.DS_Store
+**/.DS_Store
+
+# Smoke-test artifacts
+smoke_equity.png
+
+# One-shot setup/patch scripts
+setup_*.sh
+fix*.sh
