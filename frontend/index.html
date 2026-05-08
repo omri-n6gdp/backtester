@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Backtester</title>
+
+  <!-- Tailwind CDN (Play CDN; fine for local dev, no build step) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            // Bloomberg-ish dark palette
+            ink:   { 950: '#0a0b0d', 900: '#0e1014', 850: '#13161c', 800: '#181c24', 700: '#222732', 600: '#2c323f', 500: '#3a4150' },
+            mute:  { 400: '#6b7280', 300: '#9aa3b2', 200: '#c4cad4', 100: '#e5e7eb' },
+            accent:{ 500: '#22c55e', 400: '#4ade80', 600: '#16a34a' }, // electric green
+            danger:{ 500: '#ef4444' },
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+
+  <!-- lightweight-charts v5 (TradingView) -->
+  <script src="https://unpkg.com/lightweight-charts@5.0.7/dist/lightweight-charts.standalone.production.js"></script>
+
+  <style>
+    html, body, #app { height: 100%; }
+    body { background: #0a0b0d; color: #e5e7eb; font-family: 'Inter', system-ui, sans-serif; }
+    .num { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace; font-variant-numeric: tabular-nums; }
+    /* tiny custom scrollbar */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: #0e1014; }
+    ::-webkit-scrollbar-thumb { background: #222732; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: #2c323f; }
+  </style>
+
+  <!-- ES module import map: pull React via esm.sh, plus htm for JSX-free templating -->
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.3.1",
+        "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+        "htm": "https://esm.sh/htm@3.1.1"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
