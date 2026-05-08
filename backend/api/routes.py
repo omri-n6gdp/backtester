@@ -19,18 +19,21 @@ from backend.api.schemas import (
     BacktestResponse,
     CostConfigModel,
     HealthResponse,
+    OOSResponseModel,
     PricesResponse,
     StrategyCreateRequest,
     StrategyCreateResponse,
     StrategyDetail,
     StrategySummary,
     ValidationResultModel,
+    WindowMetricsModel,
 )
 from backend.data.prices import get_prices
 from backend.db import repo
 from backend.db.conn import connect
 from backend.engine.costs import CostConfig, DEFAULT_COST_CONFIG
 from backend.engine.metrics import compute_metrics
+from backend.engine.robustness.oos import WindowResult, split_result
 from backend.engine.validator import load_validated_strategy, validate_strategy
 from backend.engine.vectorized import run_backtest
 from backend.storage import STRATEGIES_DIR
@@ -101,6 +104,17 @@ def _validation_result_to_model(vresult: Any) -> ValidationResultModel:
         errors=list(getattr(vresult, "errors", []) or []),
         warnings=list(getattr(vresult, "warnings", []) or []),
         strategy_name=getattr(vresult, "strategy_name", None),
+    )
+
+
+def _window_to_model(w: WindowResult) -> WindowMetricsModel:
+    """Convert a WindowResult (engine) to a WindowMetricsModel (API schema)."""
+    return WindowMetricsModel(
+        label=w.label,
+        start=w.start.isoformat(),
+        end=w.end.isoformat(),
+        n_bars=w.n_bars,
+        metrics=_metrics_to_dict(w.metrics),
     )
 
 
@@ -274,6 +288,20 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
     metrics_bundle = compute_metrics(result)
     metrics_dict = _metrics_to_dict(metrics_bundle)
 
+    # 3.5 Optional in-sample / out-of-sample split.
+    oos_response: OOSResponseModel | None = None
+    if req.oos_split is not None:
+        try:
+            oos_result = split_result(result, split=req.oos_split)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(status_code=400, detail=f"invalid oos_split: {e!s}")
+        oos_response = OOSResponseModel(
+            split_timestamp=oos_result.split_timestamp.isoformat(),
+            split_index=oos_result.split_index,
+            in_sample=_window_to_model(oos_result.in_sample),
+            out_of_sample=_window_to_model(oos_result.out_of_sample),
+        )
+
     # 4. Persist run + curves + metrics + trades.
     run_id = uuid.uuid4().hex
     created_at = datetime.now(timezone.utc).isoformat()
@@ -340,4 +368,5 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
         raw_positions=raw_pos_list,
         positions=pos_list,
         trades=trades_list,
+        oos=oos_response,
     )

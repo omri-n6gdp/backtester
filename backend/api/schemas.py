@@ -80,6 +80,24 @@ class BacktestRequest(BaseModel):
     cost_config: CostConfigModel | None = None
     starting_capital: float = 100_000.0
     bars_per_year: int = 252
+    oos_split: float | str | None = None
+
+
+class WindowMetricsModel(BaseModel):
+    """IS or OOS window of a backtest, with the window's MetricsBundle."""
+    label: str                 # 'in_sample' or 'out_of_sample'
+    start: str                 # ISO timestamp of first bar
+    end: str                   # ISO timestamp of last bar
+    n_bars: int
+    metrics: dict[str, Any]
+
+
+class OOSResponseModel(BaseModel):
+    """Result of an in-sample / out-of-sample split on a backtest."""
+    split_timestamp: str       # first OOS bar
+    split_index: int
+    in_sample: WindowMetricsModel
+    out_of_sample: WindowMetricsModel
 
 
 class TradeModel(BaseModel):
@@ -99,3 +117,4 @@ class BacktestResponse(BaseModel):
     raw_positions: list[float | None]
     positions: list[float | None]
     trades: list[dict[str, Any]]
+    oos: OOSResponseModel | None = None
