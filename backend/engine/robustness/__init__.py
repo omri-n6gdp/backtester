@@ -12,5 +12,17 @@ Public re-exports follow.
 """
 
 from .oos import OOSResult, WindowResult, split_result
+from .walk_forward import (
+    WalkForwardResult,
+    WindowReport,
+    walk_forward,
+)
 
-__all__ = ["OOSResult", "WindowResult", "split_result"]
+__all__ = [
+    "OOSResult",
+    "WindowResult",
+    "split_result",
+    "WalkForwardResult",
+    "WindowReport",
+    "walk_forward",
+]
