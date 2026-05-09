@@ -47,7 +47,12 @@ def _synthetic_ohlcv(n_bars: int = 252) -> pd.DataFrame:
     high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.005, n_bars)))
     low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.005, n_bars)))
     volume = rng.integers(1_000_000, 10_000_000, size=n_bars).astype(float)
-    idx = pd.date_range(end=datetime.now(timezone.utc).date(), periods=n_bars, freq="B", tz="UTC")
+    # NOTE: Use a fixed start date, not `end=datetime.now()`. With freq="B",
+    # pandas snaps `end` back to the prior business day BEFORE applying
+    # `periods`, so on weekends/holidays you get n_bars - 1 rows and the
+    # DataFrame constructor raises a length-mismatch error. The tests only
+    # care about row count (252), not the actual calendar range.
+    idx = pd.date_range(start="2010-01-04", periods=n_bars, freq="B", tz="UTC")
     return pd.DataFrame(
         {"open": open_, "high": high, "low": low, "close": close, "volume": volume},
         index=idx,

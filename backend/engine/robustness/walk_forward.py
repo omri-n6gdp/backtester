@@ -95,6 +95,9 @@ class WalkForwardResult:
     oos_equity: pd.Series       # concatenated test windows, rebased to starting_capital
     oos_returns: pd.Series      # concatenated per-bar (post-cost) returns
     oos_drawdown: pd.Series     # rebuilt from oos_equity
+    oos_positions: pd.Series    # SHIFTED positions actually applied (concatenated)
+    oos_raw_positions: pd.Series  # UNSHIFTED positions returned by selected combos
+    oos_costs: pd.Series        # per-bar costs in return units (concatenated)
     oos_metrics: MetricsBundle  # MetricsBundle of the concatenated OOS curve
     param_stability: dict[str, dict[str, Any]]
     n_combinations: int
@@ -248,6 +251,9 @@ def walk_forward(
         oos_equity=aggregate.equity,
         oos_returns=aggregate.returns,
         oos_drawdown=aggregate.drawdown,
+        oos_positions=aggregate.positions,
+        oos_raw_positions=aggregate.raw_positions,
+        oos_costs=aggregate.costs,
         oos_metrics=aggregate_metrics,
         param_stability=stability,
         n_combinations=len(combos),

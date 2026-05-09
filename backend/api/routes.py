@@ -20,12 +20,16 @@ from backend.api.schemas import (
     CostConfigModel,
     HealthResponse,
     OOSResponseModel,
+    ParamStabilityEntry,
     PricesResponse,
     StrategyCreateRequest,
     StrategyCreateResponse,
     StrategyDetail,
     StrategySummary,
     ValidationResultModel,
+    WalkForwardRequest,
+    WalkForwardResponse,
+    WalkForwardWindowModel,
     WindowMetricsModel,
 )
 from backend.data.prices import get_prices
@@ -34,6 +38,7 @@ from backend.db.conn import connect
 from backend.engine.costs import CostConfig, DEFAULT_COST_CONFIG
 from backend.engine.metrics import compute_metrics
 from backend.engine.robustness.oos import WindowResult, split_result
+from backend.engine.robustness.walk_forward import WindowReport, walk_forward
 from backend.engine.validator import load_validated_strategy, validate_strategy
 from backend.engine.vectorized import run_backtest
 from backend.storage import STRATEGIES_DIR
@@ -116,6 +121,42 @@ def _window_to_model(w: WindowResult) -> WindowMetricsModel:
         n_bars=w.n_bars,
         metrics=_metrics_to_dict(w.metrics),
     )
+
+
+def _walk_forward_window_to_model(w: WindowReport) -> WalkForwardWindowModel:
+    """Convert a WindowReport (engine) to a WalkForwardWindowModel (API schema)."""
+    return WalkForwardWindowModel(
+        window_index=w.window_index,
+        train_start=w.train_start.isoformat(),
+        train_end=w.train_end.isoformat(),
+        test_start=w.test_start.isoformat(),
+        test_end=w.test_end.isoformat(),
+        n_train_bars=w.n_train_bars,
+        n_test_bars=w.n_test_bars,
+        selected_params=dict(w.selected_params),
+        is_metrics=_metrics_to_dict(w.is_metrics),
+        oos_metrics=_metrics_to_dict(w.oos_metrics),
+    )
+
+
+def _param_stability_to_models(
+    stability: dict[str, dict[str, Any]],
+) -> dict[str, ParamStabilityEntry]:
+    """Convert engine param_stability dict -> API ParamStabilityEntry models.
+
+    JSON requires string keys, so the engine's `counts` (dict keyed by the
+    original parameter values: int, float, str, ...) is stringified here.
+    """
+    out: dict[str, ParamStabilityEntry] = {}
+    for key, entry in stability.items():
+        raw_counts = entry["counts"]
+        str_counts = {str(k): int(v) for k, v in raw_counts.items()}
+        out[key] = ParamStabilityEntry(
+            counts=str_counts,
+            n_distinct=int(entry["n_distinct"]),
+            mode=str(entry["mode"]),
+        )
+    return out
 
 
 # -------- /health --------
@@ -370,3 +411,156 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
         trades=trades_list,
         oos=oos_response,
     )
+
+# -------- /backtest/walk_forward --------
+
+@router.post("/backtest/walk_forward", response_model=WalkForwardResponse)
+def run_walk_forward_route(req: WalkForwardRequest) -> WalkForwardResponse:
+    # 1. Look up + load + revalidate the strategy.
+    with connect() as conn:
+        row = repo.get_strategy(conn, req.strategy_id)
+    if row is None or row["active"] == 0:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    code_path = Path(row["code_path"])
+    if not code_path.exists():
+        raise HTTPException(status_code=410, detail="strategy code file missing on disk")
+    code = code_path.read_text(encoding="utf-8")
+    try:
+        fn = load_validated_strategy(code)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "stored strategy fails revalidation", "errors": [str(e)]},
+        )
+
+    # 2. Optionally wrap the strategy so base_params are merged into every grid combo.
+    base = dict(req.base_params or {})
+    if base:
+        original_fn = fn
+
+        def fn_with_base(data: pd.DataFrame, params: dict) -> pd.Series:
+            merged = {**base, **(params or {})}
+            return original_fn(data, merged)
+
+        fn = fn_with_base
+
+    # 3. Fetch prices.
+    try:
+        data = get_prices(
+            ticker=req.ticker, timeframe=req.timeframe,
+            start=_parse_date(req.start), end=_parse_date(req.end),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"data fetch failed: {e!s}")
+    if data.empty:
+        raise HTTPException(status_code=404, detail="no data for requested window")
+
+    # 4. Run the walk-forward.
+    cost_config = _cost_config_from_model(req.cost_config)
+    try:
+        wf = walk_forward(
+            fn, data, req.param_grid,
+            train_bars=req.train_bars,
+            test_bars=req.test_bars,
+            cost_config=cost_config,
+            starting_capital=req.starting_capital,
+            bars_per_year=req.bars_per_year,
+            selection_metric=req.selection_metric,
+            higher_is_better=req.higher_is_better,
+        )
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=f"walk_forward failed: {e!s}")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"walk_forward error: {e!s}")
+
+    # 5. Marshal response.
+    run_id = uuid.uuid4().hex
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    oos_timestamps = _index_to_iso(wf.oos_equity.index)
+    oos_equity = _series_to_list(wf.oos_equity)
+    oos_drawdown = _series_to_list(wf.oos_drawdown)
+    oos_returns = _series_to_list(wf.oos_returns)
+    oos_costs = _series_to_list(wf.oos_costs)
+    oos_positions = _series_to_list(wf.oos_positions)
+    oos_raw_positions = _series_to_list(wf.oos_raw_positions)
+    oos_metrics_dict = _metrics_to_dict(wf.oos_metrics)
+    windows_models = [_walk_forward_window_to_model(w) for w in wf.windows]
+    stability_models = _param_stability_to_models(wf.param_stability)
+
+    # 6. Persist (mode tag distinguishes this from a single backtest run).
+    grid_for_persistence: Any
+    if isinstance(req.param_grid, list):
+        grid_for_persistence = list(req.param_grid)
+    else:
+        grid_for_persistence = dict(req.param_grid)
+    meta_blob = {
+        "mode": "walk_forward",
+        "selection_metric": req.selection_metric,
+        "higher_is_better": req.higher_is_better,
+        "train_bars": req.train_bars,
+        "test_bars": req.test_bars,
+        "base_params": base,
+        "param_grid": grid_for_persistence,
+        "n_combinations": wf.n_combinations,
+        "windows": [
+            {
+                "window_index": w.window_index,
+                "train_start": w.train_start.isoformat(),
+                "train_end": w.train_end.isoformat(),
+                "test_start": w.test_start.isoformat(),
+                "test_end": w.test_end.isoformat(),
+                "selected_params": dict(w.selected_params),
+            }
+            for w in wf.windows
+        ],
+    }
+    with connect() as conn:
+        repo.insert_run(
+            conn,
+            run_id=run_id,
+            strategy_id=req.strategy_id,
+            ticker=req.ticker,
+            timeframe=req.timeframe,
+            start_date=req.start,
+            end_date=req.end,
+            params_json=json.dumps(meta_blob),
+            cost_config_json=json.dumps(dataclasses.asdict(cost_config)),
+            starting_capital=req.starting_capital,
+            bars_per_year=req.bars_per_year,
+            created_at=created_at,
+        )
+        repo.insert_metrics(conn, run_id=run_id, metrics_json=json.dumps(oos_metrics_dict))
+        repo.insert_curves(
+            conn,
+            run_id=run_id,
+            timestamps_json=json.dumps(oos_timestamps),
+            equity_json=json.dumps(oos_equity),
+            drawdown_json=json.dumps(oos_drawdown),
+            returns_json=json.dumps(oos_returns),
+            costs_json=json.dumps(oos_costs),
+            raw_positions_json=json.dumps(oos_raw_positions),
+            positions_json=json.dumps(oos_positions),
+        )
+        # Trades are deliberately NOT persisted for walk-forward runs:
+        # per-window trade pnl_returns are window-relative, not aggregate-relative,
+        # so they would be misleading on the run-level view. Phase 8 can add a
+        # walk_forward_trades table if needed.
+
+    return WalkForwardResponse(
+        run_id=run_id,
+        n_windows=len(wf.windows),
+        n_combinations=wf.n_combinations,
+        selection_metric=wf.selection_metric,
+        higher_is_better=wf.higher_is_better,
+        windows=windows_models,
+        oos_timestamps=oos_timestamps,
+        oos_equity=oos_equity,
+        oos_drawdown=oos_drawdown,
+        oos_returns=oos_returns,
+        oos_metrics=oos_metrics_dict,
+        param_stability=stability_models,
+    )
+
