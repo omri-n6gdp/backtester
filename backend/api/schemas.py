@@ -81,6 +81,7 @@ class BacktestRequest(BaseModel):
     starting_capital: float = 100_000.0
     bars_per_year: int = 252
     oos_split: float | str | None = None
+    monte_carlo: MonteCarloConfigModel | None = None
 
 
 class WindowMetricsModel(BaseModel):
@@ -159,6 +160,33 @@ class WalkForwardResponse(BaseModel):
     param_stability: dict[str, ParamStabilityEntry]
 
 
+class MonteCarloConfigModel(BaseModel):
+    """Monte Carlo trade-order shuffling config. Mirror of MonteCarloConfig."""
+    model_config = ConfigDict(extra="forbid")
+
+    n_iterations: int = 1000
+    seed: int | None = 42
+    quantiles: list[float] = Field(default_factory=lambda: [0.05, 0.5, 0.95])
+
+
+class MonteCarloResponseModel(BaseModel):
+    """Result of a Monte Carlo trade-order shuffle on a backtest."""
+    n_iterations: int
+    n_trades: int
+    seed: int | None
+    quantiles: list[float]
+    original_final_equity: float
+    original_max_drawdown: float
+    original_max_drawdown_trades: int
+    final_equities: list[float]
+    max_drawdowns: list[float]
+    max_drawdown_durations: list[int]
+    equity_bands: dict[str, list[float]]
+    drawdown_bands: dict[str, list[float]]
+    max_dd_quantiles: dict[str, float]
+    original_dd_percentile: float | None
+
+
 class TradeModel(BaseModel):
     """Loose schema — populated from dataclasses.asdict(trade). Extra fields permitted."""
     model_config = ConfigDict(extra="allow")
@@ -177,3 +205,4 @@ class BacktestResponse(BaseModel):
     positions: list[float | None]
     trades: list[dict[str, Any]]
     oos: OOSResponseModel | None = None
+    monte_carlo: MonteCarloResponseModel | None = None

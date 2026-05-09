@@ -19,6 +19,8 @@ from backend.api.schemas import (
     BacktestResponse,
     CostConfigModel,
     HealthResponse,
+    MonteCarloConfigModel,
+    MonteCarloResponseModel,
     OOSResponseModel,
     ParamStabilityEntry,
     PricesResponse,
@@ -38,6 +40,10 @@ from backend.db.conn import connect
 from backend.engine.costs import CostConfig, DEFAULT_COST_CONFIG
 from backend.engine.metrics import compute_metrics
 from backend.engine.robustness.oos import WindowResult, split_result
+from backend.engine.robustness.monte_carlo import (
+    MonteCarloConfig,
+    monte_carlo_shuffle,
+)
 from backend.engine.robustness.walk_forward import WindowReport, walk_forward
 from backend.engine.validator import load_validated_strategy, validate_strategy
 from backend.engine.vectorized import run_backtest
@@ -343,6 +349,44 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
             out_of_sample=_window_to_model(oos_result.out_of_sample),
         )
 
+    # 3.6 Optional Monte Carlo trade-order shuffle.
+    mc_response: MonteCarloResponseModel | None = None
+    if req.monte_carlo is not None:
+        try:
+            mc_cfg = MonteCarloConfig(
+                n_iterations=req.monte_carlo.n_iterations,
+                seed=req.monte_carlo.seed,
+                quantiles=tuple(req.monte_carlo.quantiles),
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid monte_carlo config: {e!s}",
+            )
+        try:
+            mc_result = monte_carlo_shuffle(result, mc_cfg)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"monte_carlo failed: {e!s}")
+        # Convert NaN percentile to None for JSON safety (NaN is not valid JSON).
+        dd_pct = mc_result.original_dd_percentile
+        dd_pct_safe = None if dd_pct != dd_pct else dd_pct
+        mc_response = MonteCarloResponseModel(
+            n_iterations=mc_result.n_iterations,
+            n_trades=mc_result.n_trades,
+            seed=mc_result.seed,
+            quantiles=mc_result.quantiles,
+            original_final_equity=mc_result.original_final_equity,
+            original_max_drawdown=mc_result.original_max_drawdown,
+            original_max_drawdown_trades=mc_result.original_max_drawdown_trades,
+            final_equities=mc_result.final_equities,
+            max_drawdowns=mc_result.max_drawdowns,
+            max_drawdown_durations=mc_result.max_drawdown_durations,
+            equity_bands=mc_result.equity_bands,
+            drawdown_bands=mc_result.drawdown_bands,
+            max_dd_quantiles=mc_result.max_dd_quantiles,
+            original_dd_percentile=dd_pct_safe,
+        )
+
     # 4. Persist run + curves + metrics + trades.
     run_id = uuid.uuid4().hex
     created_at = datetime.now(timezone.utc).isoformat()
@@ -410,6 +454,7 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
         positions=pos_list,
         trades=trades_list,
         oos=oos_response,
+        monte_carlo=mc_response,
     )
 
 # -------- /backtest/walk_forward --------
