@@ -82,6 +82,7 @@ class BacktestRequest(BaseModel):
     bars_per_year: int = 252
     oos_split: float | str | None = None
     monte_carlo: MonteCarloConfigModel | None = None
+    n_trials: int | None = None
 
 
 class WindowMetricsModel(BaseModel):
@@ -187,6 +188,20 @@ class MonteCarloResponseModel(BaseModel):
     original_dd_percentile: float | None
 
 
+class DeflatedSharpeResponseModel(BaseModel):
+    """Probabilistic + Deflated Sharpe Ratio analysis. Mirror of DeflatedSharpeResult."""
+    n_returns: int
+    n_trials: int
+    bars_per_year: int
+    sharpe_annualized: float | None
+    sharpe_per_bar: float | None
+    skew: float | None
+    excess_kurtosis: float | None
+    expected_max_sharpe_annualized: float | None
+    psr: float | None
+    dsr: float | None
+
+
 class TradeModel(BaseModel):
     """Loose schema — populated from dataclasses.asdict(trade). Extra fields permitted."""
     model_config = ConfigDict(extra="allow")
@@ -206,3 +221,4 @@ class BacktestResponse(BaseModel):
     trades: list[dict[str, Any]]
     oos: OOSResponseModel | None = None
     monte_carlo: MonteCarloResponseModel | None = None
+    deflated_sharpe: DeflatedSharpeResponseModel | None = None

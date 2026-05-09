@@ -21,6 +21,7 @@ from backend.api.schemas import (
     HealthResponse,
     MonteCarloConfigModel,
     MonteCarloResponseModel,
+    DeflatedSharpeResponseModel,
     OOSResponseModel,
     ParamStabilityEntry,
     PricesResponse,
@@ -44,6 +45,7 @@ from backend.engine.robustness.monte_carlo import (
     MonteCarloConfig,
     monte_carlo_shuffle,
 )
+from backend.engine.robustness.deflated_sharpe import compute_deflated_sharpe
 from backend.engine.robustness.walk_forward import WindowReport, walk_forward
 from backend.engine.validator import load_validated_strategy, validate_strategy
 from backend.engine.vectorized import run_backtest
@@ -387,6 +389,33 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
             original_dd_percentile=dd_pct_safe,
         )
 
+    # 3.7 Optional Probabilistic / Deflated Sharpe Ratio.
+    ds_response: DeflatedSharpeResponseModel | None = None
+    if req.n_trials is not None:
+        try:
+            ds_result = compute_deflated_sharpe(
+                result.returns,
+                n_trials=req.n_trials,
+                bars_per_year=req.bars_per_year,
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid n_trials: {e!s}",
+            )
+        ds_response = DeflatedSharpeResponseModel(
+            n_returns=ds_result.n_returns,
+            n_trials=ds_result.n_trials,
+            bars_per_year=ds_result.bars_per_year,
+            sharpe_annualized=ds_result.sharpe_annualized,
+            sharpe_per_bar=ds_result.sharpe_per_bar,
+            skew=ds_result.skew,
+            excess_kurtosis=ds_result.excess_kurtosis,
+            expected_max_sharpe_annualized=ds_result.expected_max_sharpe_annualized,
+            psr=ds_result.psr,
+            dsr=ds_result.dsr,
+        )
+
     # 4. Persist run + curves + metrics + trades.
     run_id = uuid.uuid4().hex
     created_at = datetime.now(timezone.utc).isoformat()
@@ -455,6 +484,7 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
         trades=trades_list,
         oos=oos_response,
         monte_carlo=mc_response,
+        deflated_sharpe=ds_response,
     )
 
 # -------- /backtest/walk_forward --------
