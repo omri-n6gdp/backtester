@@ -6,7 +6,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,9 @@ from backend.api.schemas import (
     MonteCarloConfigModel,
     MonteCarloResponseModel,
     DeflatedSharpeResponseModel,
+    RegimeAnalysisResponseModel,
+    RegimeAxisResponseModel,
+    RegimeWindowModel,
     OOSResponseModel,
     ParamStabilityEntry,
     PricesResponse,
@@ -46,10 +49,49 @@ from backend.engine.robustness.monte_carlo import (
     monte_carlo_shuffle,
 )
 from backend.engine.robustness.deflated_sharpe import compute_deflated_sharpe
+from backend.engine.robustness.regimes import (
+    RegimeAnalysisResult,
+    RegimeAxisResult,
+    analyze_regimes,
+)
 from backend.engine.robustness.walk_forward import WindowReport, walk_forward
 from backend.engine.validator import load_validated_strategy, validate_strategy
 from backend.engine.vectorized import run_backtest
 from backend.storage import STRATEGIES_DIR
+
+# -------- regime helpers --------
+
+def _fetch_regime_close(ticker: str, start: date, end: date, warmup_days: int = 0) -> tuple[Any, str | None]:
+    """Fetch a daily close series for the given ticker. Returns (close_series, error).
+    Either may be None. `warmup_days` extends the start backward to give
+    rolling indicators (e.g. SPY 200d MA) enough history."""
+    fetch_start = start - timedelta(days=warmup_days) if warmup_days > 0 else start
+    try:
+        df = get_prices(ticker=ticker, timeframe="1d", start=fetch_start, end=end)
+    except Exception as e:  # noqa: BLE001
+        return None, f"{ticker} fetch failed: {type(e).__name__}: {e}"
+    if df is None or df.empty:
+        return None, f"{ticker} returned no data for range"
+    return df["close"], None
+
+
+def _axis_to_response(axis: RegimeAxisResult) -> RegimeAxisResponseModel:
+    """Engine RegimeAxisResult -> API RegimeAxisResponseModel."""
+    return RegimeAxisResponseModel(
+        name=axis.name,
+        n_bars_total=axis.n_bars_total,
+        n_bars_unknown=axis.n_bars_unknown,
+        windows={
+            label: RegimeWindowModel(
+                label=w.label,
+                n_bars=w.n_bars,
+                fraction=w.fraction,
+                metrics=_metrics_to_dict(w.metrics),
+            )
+            for label, w in axis.windows.items()
+        },
+    )
+
 
 router = APIRouter()
 
@@ -416,6 +458,32 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
             dsr=ds_result.dsr,
         )
 
+    # 3.8 Optional regime conditional analysis.
+    regimes_response: RegimeAnalysisResponseModel | None = None
+    if req.include_regimes:
+        spy_close, spy_err = _fetch_regime_close(
+            "SPY", _parse_date(req.start), _parse_date(req.end), warmup_days=400,
+        )
+        vix_close, vix_err = _fetch_regime_close(
+            "^VIX", _parse_date(req.start), _parse_date(req.end), warmup_days=0,
+        )
+        try:
+            regime_result: RegimeAnalysisResult = analyze_regimes(
+                result, spy_close=spy_close, vix_close=vix_close,
+            )
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"regime analysis failed: {e!s}")
+        # Combine fetch errors with engine errors. Fetch errors win
+        # because if we couldn't fetch, we never even called the engine.
+        spy_err_combined = spy_err or regime_result.spy_trend_error
+        vix_err_combined = vix_err or regime_result.vix_level_error
+        regimes_response = RegimeAnalysisResponseModel(
+            spy_trend=_axis_to_response(regime_result.spy_trend) if regime_result.spy_trend else None,
+            vix_level=_axis_to_response(regime_result.vix_level) if regime_result.vix_level else None,
+            spy_trend_error=spy_err_combined,
+            vix_level_error=vix_err_combined,
+        )
+
     # 4. Persist run + curves + metrics + trades.
     run_id = uuid.uuid4().hex
     created_at = datetime.now(timezone.utc).isoformat()
@@ -485,6 +553,7 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
         oos=oos_response,
         monte_carlo=mc_response,
         deflated_sharpe=ds_response,
+        regimes=regimes_response,
     )
 
 # -------- /backtest/walk_forward --------

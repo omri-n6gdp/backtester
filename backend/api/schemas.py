@@ -83,6 +83,7 @@ class BacktestRequest(BaseModel):
     oos_split: float | str | None = None
     monte_carlo: MonteCarloConfigModel | None = None
     n_trials: int | None = None
+    include_regimes: bool = False
 
 
 class WindowMetricsModel(BaseModel):
@@ -202,6 +203,30 @@ class DeflatedSharpeResponseModel(BaseModel):
     dsr: float | None
 
 
+class RegimeWindowModel(BaseModel):
+    """One regime's slice of a backtest with its bar-level metrics."""
+    label: str
+    n_bars: int
+    fraction: float
+    metrics: dict[str, Any]
+
+
+class RegimeAxisResponseModel(BaseModel):
+    """One regime axis (e.g. SPY trend, VIX level)."""
+    name: str
+    n_bars_total: int
+    n_bars_unknown: int
+    windows: dict[str, RegimeWindowModel]
+
+
+class RegimeAnalysisResponseModel(BaseModel):
+    """Result of regime conditional analysis on a backtest."""
+    spy_trend: RegimeAxisResponseModel | None = None
+    vix_level: RegimeAxisResponseModel | None = None
+    spy_trend_error: str | None = None
+    vix_level_error: str | None = None
+
+
 class TradeModel(BaseModel):
     """Loose schema — populated from dataclasses.asdict(trade). Extra fields permitted."""
     model_config = ConfigDict(extra="allow")
@@ -222,3 +247,4 @@ class BacktestResponse(BaseModel):
     oos: OOSResponseModel | None = None
     monte_carlo: MonteCarloResponseModel | None = None
     deflated_sharpe: DeflatedSharpeResponseModel | None = None
+    regimes: RegimeAnalysisResponseModel | None = None
