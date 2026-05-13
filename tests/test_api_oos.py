@@ -1,14 +1,10 @@
-"""API tests for the OOS split feature added in Phase 5.1."""
+"""API tests for the OOS split feature on /backtest."""
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
 
-from backend.api import create_app
-from backend.db.conn import migrate
+from tests.conftest import install_fake_prices, make_synthetic_ohlcv, post_strategy
 
 
 BUY_AND_HOLD_CODE = """
@@ -19,60 +15,11 @@ def strategy(data, params):
 """
 
 
-def _fake_get_prices(ticker, timeframe, start, end):
-    """Synthetic OHLCV — 500 business days from 2010-01-01."""
-    n = 500
-    rng = np.random.default_rng(42)
-    rets = rng.normal(0.0005, 0.01, n)
-    close = 100.0 * np.exp(np.cumsum(rets))
-    idx = pd.date_range("2010-01-01", periods=n, freq="B", tz="UTC")
-    return pd.DataFrame(
-        {
-            "open": close,
-            "high": close * 1.01,
-            "low": close * 0.99,
-            "close": close,
-            "volume": 1e6,
-        },
-        index=idx,
-    )
-
-
 @pytest.fixture
-def client_with_strategy(tmp_path, monkeypatch):
-    """TestClient against a tmp DB, with a saved buy-and-hold strategy."""
-    data_root = tmp_path / "btdata"
-    db_dir = data_root / "results"
-    db_dir.mkdir(parents=True)
-    db_path = db_dir / "results.db"
-    strategies_dir = data_root / "strategies"
-    strategies_dir.mkdir(parents=True)
-
-    # Patch storage paths in their canonical home and any module that
-    # imported them by name at module load (routes is the one we know).
-    monkeypatch.setattr("backend.storage.DATA_ROOT", data_root, raising=False)
-    monkeypatch.setattr("backend.storage.DB_DIR", db_dir, raising=False)
-    monkeypatch.setattr("backend.storage.DB_PATH", db_path, raising=False)
-    monkeypatch.setattr("backend.storage.STRATEGIES_DIR", strategies_dir, raising=False)
-    monkeypatch.setattr("backend.api.routes.STRATEGIES_DIR", strategies_dir, raising=False)
-    monkeypatch.setattr("backend.api.routes.get_prices", _fake_get_prices, raising=False)
-
-    # Run migrations directly; FastAPI startup hook is unreliable under TestClient.
-    migrate()
-
-    app = create_app()
-    with TestClient(app) as client:
-        resp = client.post(
-            "/strategies",
-            json={
-                "name": "Buy and Hold",
-                "description": "always long",
-                "code": BUY_AND_HOLD_CODE,
-            },
-        )
-        assert resp.status_code == 200, resp.text
-        strategy_id = resp.json()["strategy_id"]
-        yield client, strategy_id
+def client_with_strategy(api_client, monkeypatch):
+    install_fake_prices(monkeypatch, lambda *_a, **_kw: make_synthetic_ohlcv(n=500))
+    sid = post_strategy(api_client, "Buy and Hold", BUY_AND_HOLD_CODE, "always long")
+    yield api_client, sid
 
 
 def _backtest_payload(strategy_id, **overrides):

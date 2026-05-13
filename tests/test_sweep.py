@@ -1,5 +1,5 @@
 """
-Tests for backend/engine/robustness/sweep.py and POST /backtest/sweep (Phase 5.7).
+Tests for backend/engine/robustness/sweep.py and POST /backtest/sweep.
 27 tests covering helpers, run_sweep integration, and the API endpoint.
 """
 from __future__ import annotations
@@ -9,10 +9,7 @@ import math
 import numpy as np
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
 
-from backend.api import create_app
-from backend.db.conn import migrate
 from backend.engine.costs import DEFAULT_COST_CONFIG
 from backend.engine.metrics import MetricsBundle
 from backend.engine.robustness.sweep import (
@@ -24,6 +21,7 @@ from backend.engine.robustness.sweep import (
     is_metrics_field,
     run_sweep,
 )
+from tests.conftest import install_fake_prices, post_strategy
 
 
 # ---- shared fixtures and helpers ----------------------------------------
@@ -121,14 +119,10 @@ def test_select_best_all_nan_returns_none():
 # ---- _empirical_trial_variance ------------------------------------------
 
 def _make_combo(sharpe: float) -> ComboResult:
-    m = MetricsBundle(**{f.name: 0 for f in __import__("dataclasses").fields(MetricsBundle)})
-    object.__setattr__(m, "sharpe", sharpe) if hasattr(m, "__dataclass_fields__") else None
-    # Use a plain replacement approach compatible with the dataclass.
     import dataclasses
     fields = {f.name: 0.0 for f in dataclasses.fields(MetricsBundle)}
     fields["sharpe"] = sharpe
-    mb = MetricsBundle(**fields)
-    return ComboResult(index=0, params={}, metrics=mb, score=sharpe)
+    return ComboResult(index=0, params={}, metrics=MetricsBundle(**fields), score=sharpe)
 
 
 def test_empirical_trial_variance_normal():
@@ -285,36 +279,11 @@ def strategy(data, params):
 """
 
 
-def _fake_get_prices(ticker, timeframe, start, end):
-    return _make_ohlcv()
-
-
 @pytest.fixture
-def sweep_client(tmp_path, monkeypatch):
-    data_root = tmp_path / "btdata"
-    db_dir = data_root / "results"
-    db_dir.mkdir(parents=True)
-    db_path = db_dir / "results.db"
-    strategies_dir = data_root / "strategies"
-    strategies_dir.mkdir(parents=True)
-
-    monkeypatch.setattr("backend.storage.DATA_ROOT", data_root, raising=False)
-    monkeypatch.setattr("backend.storage.DB_DIR", db_dir, raising=False)
-    monkeypatch.setattr("backend.storage.DB_PATH", db_path, raising=False)
-    monkeypatch.setattr("backend.storage.STRATEGIES_DIR", strategies_dir, raising=False)
-    monkeypatch.setattr("backend.api.routes.STRATEGIES_DIR", strategies_dir, raising=False)
-    monkeypatch.setattr("backend.api.routes.get_prices", _fake_get_prices, raising=False)
-
-    migrate()
-    app = create_app()
-    with TestClient(app) as client:
-        resp = client.post(
-            "/strategies",
-            json={"name": "Simple", "description": "", "code": SIMPLE_STRATEGY_CODE},
-        )
-        assert resp.status_code == 200, resp.text
-        strategy_id = resp.json()["strategy_id"]
-        yield client, strategy_id
+def sweep_client(api_client, monkeypatch):
+    install_fake_prices(monkeypatch, lambda *_a, **_kw: _make_ohlcv())
+    sid = post_strategy(api_client, "Simple", SIMPLE_STRATEGY_CODE)
+    yield api_client, sid
 
 
 def test_api_sweep_returns_200_with_correct_structure(sweep_client):

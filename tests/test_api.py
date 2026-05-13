@@ -1,25 +1,13 @@
-"""
-API tests. Each test gets a fresh app + isolated tmp DB + tmp strategies dir.
-
-Why migrate() is called inside the fixture (and not via FastAPI startup):
-the startup hook fires when the app is created, but our monkeypatch of
-DB_PATH happens before that — yet the hook reads DB_PATH lazily inside
-backend.db.conn.connect, so we'd be fine *except* that TestClient doesn't
-reliably trigger startup hooks across all FastAPI/Starlette versions.
-Calling migrate() explicitly is robust and faster.
-
-get_prices is monkeypatched to a synthetic OHLCV frame so tests run offline.
-"""
+"""API tests covering /health, /prices, /strategies CRUD, and /backtest happy paths."""
 from __future__ import annotations
 
 import textwrap
-from datetime import datetime, timezone
-from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+
+from tests.conftest import install_fake_prices, make_synthetic_ohlcv
 
 
 SAMPLE_STRATEGY = textwrap.dedent(
@@ -38,60 +26,14 @@ SAMPLE_STRATEGY = textwrap.dedent(
 INVALID_STRATEGY = "import os\n\ndef strategy(data, params):\n    return data['close'] * 0\n"
 
 
-def _synthetic_ohlcv(n_bars: int = 252) -> pd.DataFrame:
-    """Deterministic synthetic OHLCV — enough bars to satisfy 5/20 SMA crossover."""
-    rng = np.random.default_rng(42)
-    rets = rng.normal(0.0005, 0.012, size=n_bars)
-    close = 100.0 * np.exp(np.cumsum(rets))
-    open_ = np.concatenate([[100.0], close[:-1]])
-    high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.005, n_bars)))
-    low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.005, n_bars)))
-    volume = rng.integers(1_000_000, 10_000_000, size=n_bars).astype(float)
-    # NOTE: Use a fixed start date, not `end=datetime.now()`. With freq="B",
-    # pandas snaps `end` back to the prior business day BEFORE applying
-    # `periods`, so on weekends/holidays you get n_bars - 1 rows and the
-    # DataFrame constructor raises a length-mismatch error. The tests only
-    # care about row count (252), not the actual calendar range.
-    idx = pd.date_range(start="2010-01-04", periods=n_bars, freq="B", tz="UTC")
-    return pd.DataFrame(
-        {"open": open_, "high": high, "low": low, "close": close, "volume": volume},
-        index=idx,
-    ).rename_axis("timestamp")
-
-
 @pytest.fixture
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    """Fresh app + isolated storage for each test."""
-    db_dir = tmp_path / "results"
-    strategies_dir = tmp_path / "strategies"
-    db_path = db_dir / "results.db"
-
-    # Redirect storage paths BEFORE creating the app or running migrations.
-    monkeypatch.setattr("backend.storage.DB_DIR", db_dir)
-    monkeypatch.setattr("backend.storage.DB_PATH", db_path)
-    monkeypatch.setattr("backend.storage.STRATEGIES_DIR", strategies_dir)
-    # routes.py imports STRATEGIES_DIR by name at module load, so patch there too:
-    monkeypatch.setattr("backend.api.routes.STRATEGIES_DIR", strategies_dir)
-
-    # Stub get_prices in BOTH the data module and the routes module
-    # (routes imports it by name at module load).
-    def fake_get_prices(ticker, timeframe, start, end):
+def client(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    def fake(ticker, timeframe, start, end):
         if ticker == "BADTICKER":
             return pd.DataFrame()
-        return _synthetic_ohlcv(252)
-
-    monkeypatch.setattr("backend.data.prices.get_prices", fake_get_prices)
-    monkeypatch.setattr("backend.api.routes.get_prices", fake_get_prices)
-
-    # Create tables in the redirected DB. This is the key fix vs the
-    # original test file: don't rely on the FastAPI startup hook firing
-    # in TestClient — invoke the migration explicitly.
-    from backend.db.conn import migrate
-    migrate()
-
-    from backend.api import create_app
-    app = create_app()
-    return TestClient(app)
+        return make_synthetic_ohlcv(n=252, start="2010-01-04")
+    install_fake_prices(monkeypatch, fake)
+    return api_client
 
 
 # -------- /health --------

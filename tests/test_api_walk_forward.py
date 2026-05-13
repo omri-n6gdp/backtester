@@ -1,18 +1,12 @@
-"""API tests for POST /backtest/walk_forward (Phase 5.2b)."""
+"""API tests for POST /backtest/walk_forward."""
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
 
-from backend.api import create_app
-from backend.db.conn import migrate
+from tests.conftest import install_fake_prices, make_synthetic_ohlcv, post_strategy
 
 
-# A simple strategy whose position size is dispatched from params['size'].
-# Bounded to [-1, +1] so the validator accepts it.
 PARAM_DISPATCH_CODE = """
 import pandas as pd
 
@@ -26,55 +20,11 @@ def strategy(data, params):
 """
 
 
-def _fake_get_prices(ticker, timeframe, start, end):
-    """600 business days starting 2010-01-01 with positive-drift GBM."""
-    n = 600
-    rng = np.random.default_rng(11)
-    rets = rng.normal(0.0006, 0.012, n)
-    close = 100.0 * np.exp(np.cumsum(rets))
-    idx = pd.date_range("2010-01-01", periods=n, freq="B", tz="UTC")
-    return pd.DataFrame(
-        {
-            "open": close,
-            "high": close * 1.01,
-            "low": close * 0.99,
-            "close": close,
-            "volume": 1e6,
-        },
-        index=idx,
-    )
-
-
 @pytest.fixture
-def client_with_strategy(tmp_path, monkeypatch):
-    data_root = tmp_path / "btdata"
-    db_dir = data_root / "results"
-    db_dir.mkdir(parents=True)
-    db_path = db_dir / "results.db"
-    strategies_dir = data_root / "strategies"
-    strategies_dir.mkdir(parents=True)
-
-    monkeypatch.setattr("backend.storage.DATA_ROOT", data_root, raising=False)
-    monkeypatch.setattr("backend.storage.DB_DIR", db_dir, raising=False)
-    monkeypatch.setattr("backend.storage.DB_PATH", db_path, raising=False)
-    monkeypatch.setattr("backend.storage.STRATEGIES_DIR", strategies_dir, raising=False)
-    monkeypatch.setattr("backend.api.routes.STRATEGIES_DIR", strategies_dir, raising=False)
-    monkeypatch.setattr("backend.api.routes.get_prices", _fake_get_prices, raising=False)
-
-    migrate()
-    app = create_app()
-    with TestClient(app) as client:
-        resp = client.post(
-            "/strategies",
-            json={
-                "name": "Param Dispatch",
-                "description": "size from params",
-                "code": PARAM_DISPATCH_CODE,
-            },
-        )
-        assert resp.status_code == 200, resp.text
-        strategy_id = resp.json()["strategy_id"]
-        yield client, strategy_id
+def client_with_strategy(api_client, monkeypatch):
+    install_fake_prices(monkeypatch, lambda *_a, **_kw: make_synthetic_ohlcv(n=600, seed=11))
+    sid = post_strategy(api_client, "Param Dispatch", PARAM_DISPATCH_CODE, "size from params")
+    yield api_client, sid
 
 
 def _wf_payload(strategy_id, **overrides):
