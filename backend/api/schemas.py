@@ -287,6 +287,8 @@ class SweepResponse(BaseModel):
     deflated_sharpe: DeflatedSharpeResponseModel | None = None
     heatmaps: list[HeatmapResponseModel]
     param_keys: list[str]
+    best_combo_timestamps: list[str] | None = None
+    best_combo_equity: list[float | None] | None = None
 
 
 class TradeModel(BaseModel):

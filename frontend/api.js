@@ -38,9 +38,16 @@ export async function getStrategy(strategyId) {
 }
 
 export async function runBacktest(payload) {
-  // payload shape (matches BacktestRequest in backend/api/schemas.py):
-  //   { strategy_id, ticker, timeframe, start, end, params, cost_config?, starting_capital?, bars_per_year? }
   const res = await fetch(`${API_BASE}/backtest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function runSweep(payload) {
+  const res = await fetch(`${API_BASE}/backtest/sweep`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

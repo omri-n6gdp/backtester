@@ -858,6 +858,13 @@ def run_sweep_route(req: SweepRequest) -> SweepResponse:
             dsr=ds.dsr,
         )
 
+    best_timestamps = None
+    best_equity_list = None
+    if sweep.best_combo and sweep.best_combo.full_result:
+        fr = sweep.best_combo.full_result
+        best_timestamps = _index_to_iso(fr.equity.index)
+        best_equity_list = _series_to_list(fr.equity)
+
     return SweepResponse(
         run_id=run_id,
         n_combinations=sweep.n_combinations,
@@ -868,5 +875,7 @@ def run_sweep_route(req: SweepRequest) -> SweepResponse:
         deflated_sharpe=ds_model,
         heatmaps=[_heatmap_to_model(h) for h in sweep.heatmaps],
         param_keys=sweep.param_keys,
+        best_combo_timestamps=best_timestamps,
+        best_combo_equity=best_equity_list,
     )
 
