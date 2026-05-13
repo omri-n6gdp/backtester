@@ -227,6 +227,68 @@ class RegimeAnalysisResponseModel(BaseModel):
     vix_level_error: str | None = None
 
 
+class HeatmapRequestModel(BaseModel):
+    """One (x_param, y_param, metric_name) heatmap to render in a sweep."""
+    x_param: str
+    y_param: str
+    metric_name: str
+    agg: str = "last"
+
+
+class HeatmapResponseModel(BaseModel):
+    """2D metric grid across two parameter axes. Mirrors HeatmapResult."""
+    x_param: str
+    y_param: str
+    metric_name: str
+    x_values: list[Any]
+    y_values: list[Any]
+    grid: list[list[float | None]]
+    missing_mask: list[list[bool]]
+    agg: str
+    n_cells_filled: int
+    n_cells_total: int
+
+
+class ComboResultModel(BaseModel):
+    """Per-combo summary from a sweep."""
+    index: int
+    params: dict[str, Any]
+    metrics: dict[str, Any]
+    score: float | None
+    error: str | None = None
+
+
+class SweepRequest(BaseModel):
+    """Request body for POST /backtest/sweep."""
+    strategy_id: str
+    ticker: str
+    timeframe: str = "1d"
+    start: str
+    end: str
+    base_params: dict[str, Any] = Field(default_factory=dict)
+    param_grid: dict[str, Any] | list[dict[str, Any]]
+    cost_config: CostConfigModel | None = None
+    starting_capital: float = 100_000.0
+    bars_per_year: int = 252
+    selection_metric: str = "sharpe"
+    higher_is_better: bool = True
+    heatmaps: list[HeatmapRequestModel] = Field(default_factory=list)
+    include_deflated_sharpe: bool = True
+
+
+class SweepResponse(BaseModel):
+    """Response from POST /backtest/sweep."""
+    run_id: str
+    n_combinations: int
+    selection_metric: str
+    higher_is_better: bool
+    best_index: int | None
+    combos: list[ComboResultModel]
+    deflated_sharpe: DeflatedSharpeResponseModel | None = None
+    heatmaps: list[HeatmapResponseModel]
+    param_keys: list[str]
+
+
 class TradeModel(BaseModel):
     """Loose schema — populated from dataclasses.asdict(trade). Extra fields permitted."""
     model_config = ConfigDict(extra="allow")

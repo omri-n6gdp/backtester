@@ -17,21 +17,26 @@ from backend.api import VERSION
 from backend.api.schemas import (
     BacktestRequest,
     BacktestResponse,
+    ComboResultModel,
     CostConfigModel,
+    DeflatedSharpeResponseModel,
+    HeatmapRequestModel,
+    HeatmapResponseModel,
     HealthResponse,
     MonteCarloConfigModel,
     MonteCarloResponseModel,
-    DeflatedSharpeResponseModel,
-    RegimeAnalysisResponseModel,
-    RegimeAxisResponseModel,
-    RegimeWindowModel,
     OOSResponseModel,
     ParamStabilityEntry,
     PricesResponse,
+    RegimeAnalysisResponseModel,
+    RegimeAxisResponseModel,
+    RegimeWindowModel,
     StrategyCreateRequest,
     StrategyCreateResponse,
     StrategyDetail,
     StrategySummary,
+    SweepRequest,
+    SweepResponse,
     ValidationResultModel,
     WalkForwardRequest,
     WalkForwardResponse,
@@ -54,6 +59,8 @@ from backend.engine.robustness.regimes import (
     RegimeAxisResult,
     analyze_regimes,
 )
+from backend.engine.robustness.heatmaps import HeatmapResult
+from backend.engine.robustness.sweep import ComboResult, HeatmapRequest, SweepResult, run_sweep
 from backend.engine.robustness.walk_forward import WindowReport, walk_forward
 from backend.engine.validator import load_validated_strategy, validate_strategy
 from backend.engine.vectorized import run_backtest
@@ -706,5 +713,160 @@ def run_walk_forward_route(req: WalkForwardRequest) -> WalkForwardResponse:
         oos_returns=oos_returns,
         oos_metrics=oos_metrics_dict,
         param_stability=stability_models,
+    )
+
+
+# -------- /backtest/sweep --------
+
+def _combo_to_model(c: ComboResult) -> ComboResultModel:
+    score = c.score
+    score_safe = None if (score is None or (isinstance(score, float) and score != score)) else score
+    return ComboResultModel(
+        index=c.index,
+        params=dict(c.params),
+        metrics=_metrics_to_dict(c.metrics),
+        score=score_safe,
+        error=c.error,
+    )
+
+
+def _heatmap_to_model(h: HeatmapResult) -> HeatmapResponseModel:
+    grid_safe = [
+        [None if (isinstance(v, float) and v != v) else v for v in row]
+        for row in h.grid
+    ]
+    return HeatmapResponseModel(
+        x_param=h.x_param,
+        y_param=h.y_param,
+        metric_name=h.metric_name,
+        x_values=list(h.x_values),
+        y_values=list(h.y_values),
+        grid=grid_safe,
+        missing_mask=list(list(row) for row in h.missing_mask),
+        agg=h.agg,
+        n_cells_filled=h.n_cells_filled,
+        n_cells_total=h.n_cells_total,
+    )
+
+
+@router.post("/backtest/sweep", response_model=SweepResponse)
+def run_sweep_route(req: SweepRequest) -> SweepResponse:
+    # 1. Load + revalidate strategy.
+    with connect() as conn:
+        row = repo.get_strategy(conn, req.strategy_id)
+    if row is None or row["active"] == 0:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    code_path = Path(row["code_path"])
+    if not code_path.exists():
+        raise HTTPException(status_code=410, detail="strategy code file missing on disk")
+    code = code_path.read_text(encoding="utf-8")
+    try:
+        fn = load_validated_strategy(code)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "stored strategy fails revalidation", "errors": [str(e)]},
+        )
+
+    # 2. Fetch prices.
+    try:
+        data = get_prices(
+            ticker=req.ticker, timeframe=req.timeframe,
+            start=_parse_date(req.start), end=_parse_date(req.end),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"data fetch failed: {e!s}")
+    if data.empty:
+        raise HTTPException(status_code=404, detail="no data for requested window")
+
+    # 3. Run the sweep.
+    cost_config = _cost_config_from_model(req.cost_config)
+    hm_requests = [
+        HeatmapRequest(x_param=h.x_param, y_param=h.y_param, metric_name=h.metric_name, agg=h.agg)
+        for h in req.heatmaps
+    ]
+    try:
+        sweep = run_sweep(
+            fn, data, req.param_grid,
+            base_params=dict(req.base_params),
+            cost_config=cost_config,
+            starting_capital=req.starting_capital,
+            bars_per_year=req.bars_per_year,
+            selection_metric=req.selection_metric,
+            higher_is_better=req.higher_is_better,
+            heatmap_requests=hm_requests or None,
+            include_deflated_sharpe=req.include_deflated_sharpe,
+        )
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=f"sweep failed: {e!s}")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"sweep error: {e!s}")
+
+    # 4. Persist run.
+    run_id = uuid.uuid4().hex
+    created_at = datetime.now(timezone.utc).isoformat()
+    grid_for_persistence: Any
+    if isinstance(req.param_grid, list):
+        grid_for_persistence = list(req.param_grid)
+    else:
+        grid_for_persistence = dict(req.param_grid)
+    meta_blob = {
+        "mode": "sweep",
+        "selection_metric": req.selection_metric,
+        "higher_is_better": req.higher_is_better,
+        "n_combinations": sweep.n_combinations,
+        "best_index": sweep.best_index,
+        "param_grid": grid_for_persistence,
+        "base_params": dict(req.base_params),
+    }
+    best_metrics: dict[str, Any] = {}
+    if sweep.best_combo is not None:
+        best_metrics = _metrics_to_dict(sweep.best_combo.metrics)
+    with connect() as conn:
+        repo.insert_run(
+            conn,
+            run_id=run_id,
+            strategy_id=req.strategy_id,
+            ticker=req.ticker,
+            timeframe=req.timeframe,
+            start_date=req.start,
+            end_date=req.end,
+            params_json=json.dumps(meta_blob),
+            cost_config_json=json.dumps(dataclasses.asdict(cost_config)),
+            starting_capital=req.starting_capital,
+            bars_per_year=req.bars_per_year,
+            created_at=created_at,
+        )
+        repo.insert_metrics(conn, run_id=run_id, metrics_json=json.dumps(best_metrics))
+
+    # 5. Marshal and return.
+    ds_model: DeflatedSharpeResponseModel | None = None
+    if sweep.deflated_sharpe is not None:
+        ds = sweep.deflated_sharpe
+        ds_model = DeflatedSharpeResponseModel(
+            n_returns=ds.n_returns,
+            n_trials=ds.n_trials,
+            bars_per_year=ds.bars_per_year,
+            sharpe_annualized=ds.sharpe_annualized,
+            sharpe_per_bar=ds.sharpe_per_bar,
+            skew=ds.skew,
+            excess_kurtosis=ds.excess_kurtosis,
+            expected_max_sharpe_annualized=ds.expected_max_sharpe_annualized,
+            psr=ds.psr,
+            dsr=ds.dsr,
+        )
+
+    return SweepResponse(
+        run_id=run_id,
+        n_combinations=sweep.n_combinations,
+        selection_metric=sweep.selection_metric,
+        higher_is_better=sweep.higher_is_better,
+        best_index=sweep.best_index,
+        combos=[_combo_to_model(c) for c in sweep.combos],
+        deflated_sharpe=ds_model,
+        heatmaps=[_heatmap_to_model(h) for h in sweep.heatmaps],
+        param_keys=sweep.param_keys,
     )
 

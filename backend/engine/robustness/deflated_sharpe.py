@@ -128,6 +128,7 @@ def compute_deflated_sharpe(
     returns: pd.Series,
     n_trials: int = 1,
     bars_per_year: int = 252,
+    trial_sharpes_variance: float | None = None,
 ) -> DeflatedSharpeResult:
     """Compute PSR and DSR for a return series.
 
@@ -142,6 +143,12 @@ def compute_deflated_sharpe(
         to PSR. n_trials < 1 raises ValueError.
     bars_per_year:
         used only for annualized-SR display; the math is in per-bar units.
+    trial_sharpes_variance:
+        Optional empirical variance of per-bar Sharpes across the N trials.
+        When provided and positive, replaces the conservative V=1/T null
+        estimate used in the DSR Gumbel formula. The sweep route supplies
+        this from the actual distribution of combo Sharpes for a stronger
+        (less conservative) DSR. When None or <= 0, falls back to V=1/T.
 
     Returns
     -------
@@ -209,9 +216,12 @@ def compute_deflated_sharpe(
         sr_star_per_bar = 0.0
         dsr = psr
     else:
-        # Conservative null variance V ~= 1/T (each Sharpe ~ Normal(0, 1/T)
-        # under H0:true_SR=0 with IID Gaussian returns).
-        v = 1.0 / n
+        # Use empirical variance when provided; fall back to conservative
+        # V ~= 1/T (each Sharpe ~ Normal(0, 1/T) under H0:true_SR=0).
+        if trial_sharpes_variance is not None and trial_sharpes_variance > 0:
+            v = trial_sharpes_variance
+        else:
+            v = 1.0 / n
         order_stat_term = (
             (1.0 - _GAMMA_EULER_MASCHERONI) * _phi_inv(1.0 - 1.0 / n_trials)
             + _GAMMA_EULER_MASCHERONI * _phi_inv(1.0 - 1.0 / (n_trials * math.e))
