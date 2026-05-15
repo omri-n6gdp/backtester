@@ -71,16 +71,17 @@ class TranslateStrategyResponse(BaseModel):
 
 # ---------- /backtest ----------
 class CostConfigModel(BaseModel):
-    """Mirror of backend.engine.costs.CostConfig. Defaults match DEFAULT_COST_CONFIG."""
+    """Mirror of backend.engine.costs.CostConfig. Field names match the dataclass."""
     model_config = ConfigDict(extra="forbid")
 
     slippage_mode: str = "fixed"        # "fixed" | "vol_scaled"
     slippage_bps: float = 5.0
     commission_bps: float = 0.0
     spread_bps: float = 0.0
-    fx_fee_bps: float = 15.0
+    fx_bps: float = 15.0
     instrument_is_gbp: bool = False
-    borrow_cost_bps: float = 0.0
+    borrow_bps_annual: float = 0.0
+    bars_per_year: int = 252
 
 
 class BacktestRequest(BaseModel):

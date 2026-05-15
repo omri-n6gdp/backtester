@@ -1,7 +1,8 @@
-// app.js — Phase 5/6: robustness dashboard + strategy authoring
+// app.js — Phase 7: full results dashboard + authoring + robustness
 //
-// Two top-level views: 'run' (backtest/sweep) and 'author' (new strategy).
-// Within 'run', two run modes: 'backtest' and 'sweep'.
+// Two top-level views: 'run' (backtest/sweep, with optional comparison
+// of pinned runs) and 'author' (new strategy). Within 'run', two run
+// modes: 'backtest' and 'sweep'.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -25,6 +26,23 @@ def strategy(data, params):
     # Return a Series of target positions in [-1.0, +1.0] aligned with data.index.
     return pd.Series(0.0, index=data.index)
 `;
+
+// Matches backend/engine/costs.py CostConfig field names exactly.
+const DEFAULT_COST_CONFIG = {
+  slippage_mode: 'fixed',
+  slippage_bps: 5.0,
+  commission_bps: 0.0,
+  spread_bps: 0.0,
+  fx_bps: 15.0,
+  instrument_is_gbp: false,
+  borrow_bps_annual: 0.0,
+};
+
+// Up to N pins; pin colors cycle through these.
+const PIN_COLORS = ['#22c55e', '#3b82f6', '#f59e0b'];
+const PIN_LIMIT = 3;
+
+const MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 // ---- helpers -------------------------------------------------------
 
@@ -543,11 +561,14 @@ function ComboTable({ combos, bestIndex, selectionMetric, higherIsBetter }) {
 // ---- RightRail (mode-aware) ----------------------------------------
 
 function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
-                     sweepCfg, setSweepCfg, runMode, setRunMode, onRun, running }) {
+                     sweepCfg, setSweepCfg, costConfig, setCostConfig,
+                     runMode, setRunMode, onRun, running }) {
   const disabled = !selectedId || running;
   const upd = (k, v) => setConfig(c => ({ ...c, [k]: v }));
   const updR = (k, v) => setRobustness(r => ({ ...r, [k]: v }));
   const updS = (k, v) => setSweepCfg(s => ({ ...s, [k]: v }));
+  const updC = (k, v) => setCostConfig(c => ({ ...c, [k]: v }));
+  const resetCosts = () => setCostConfig(DEFAULT_COST_CONFIG);
 
   const ic = inputCls();
 
@@ -708,14 +729,57 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
           </div>
         `}
 
-        <!-- Static cost display -->
+        <!-- Cost config editor -->
         <div class="pt-1">
-          <div class="text-[10px] uppercase tracking-wider text-mute-400 mb-1">Costs (defaults)</div>
-          <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs num text-mute-300">
-            <div class="flex justify-between"><span class="text-mute-400">Slippage</span><span>5 bps</span></div>
-            <div class="flex justify-between"><span class="text-mute-400">Commission</span><span>0 bps</span></div>
-            <div class="flex justify-between"><span class="text-mute-400">FX fee</span><span>15 bps</span></div>
-            <div class="flex justify-between"><span class="text-mute-400">Borrow</span><span>0 bps</span></div>
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-[10px] uppercase tracking-wider text-mute-400">Costs (bps)</div>
+            <button onClick=${resetCosts}
+              class="text-[10px] text-mute-400 hover:text-mute-100 transition">
+              reset
+            </button>
+          </div>
+          <div class="space-y-2">
+            <${Field} label="Slippage mode">
+              <select class=${ic} value=${costConfig.slippage_mode}
+                onChange=${e => updC('slippage_mode', e.target.value)}>
+                <option value="fixed">fixed</option>
+                <option value="vol_scaled">vol_scaled (0.5 × ATR%)</option>
+              </select>
+            </${Field}>
+            <div class="grid grid-cols-2 gap-2">
+              <${Field} label="Slippage">
+                <input type="number" step="0.5" min="0" class=${ic}
+                  value=${costConfig.slippage_bps}
+                  onChange=${e => updC('slippage_bps', Number(e.target.value))} />
+              </${Field}>
+              <${Field} label="Commission">
+                <input type="number" step="0.5" min="0" class=${ic}
+                  value=${costConfig.commission_bps}
+                  onChange=${e => updC('commission_bps', Number(e.target.value))} />
+              </${Field}>
+              <${Field} label="Spread">
+                <input type="number" step="0.5" min="0" class=${ic}
+                  value=${costConfig.spread_bps}
+                  onChange=${e => updC('spread_bps', Number(e.target.value))} />
+              </${Field}>
+              <${Field} label="FX fee">
+                <input type="number" step="0.5" min="0" class=${ic}
+                  value=${costConfig.fx_bps}
+                  onChange=${e => updC('fx_bps', Number(e.target.value))}
+                  disabled=${costConfig.instrument_is_gbp} />
+              </${Field}>
+            </div>
+            <div class="flex items-center gap-2">
+              <input type="checkbox" id="gbp-cb" class="accent-accent-500"
+                checked=${costConfig.instrument_is_gbp}
+                onChange=${e => updC('instrument_is_gbp', e.target.checked)} />
+              <label for="gbp-cb" class="text-xs text-mute-200">GBP-denominated (skip FX fee)</label>
+            </div>
+            <${Field} label="Borrow cost (annual bps)">
+              <input type="number" step="1" min="0" class=${ic}
+                value=${costConfig.borrow_bps_annual}
+                onChange=${e => updC('borrow_bps_annual', Number(e.target.value))} />
+            </${Field}>
           </div>
         </div>
       </div>
@@ -733,6 +797,377 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
         ${!selectedId && html`<div class="text-xs text-mute-400 mt-2 text-center">Pick a strategy on the left.</div>`}
       </div>
     </aside>
+  `;
+}
+
+// ---- DrawdownChart (red, negative) ---------------------------------
+
+function DrawdownChart({ timestamps, drawdown }) {
+  const containerRef = useRef(null);
+  const chartRef = useRef(null);
+  const seriesRef = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current || !LWC) return;
+    const chart = LWC.createChart(containerRef.current, {
+      autoSize: true,
+      layout: {
+        background: { type: 'solid', color: '#0e1014' },
+        textColor: '#9aa3b2',
+        fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+      },
+      grid: { vertLines: { color: '#181c24' }, horzLines: { color: '#181c24' } },
+      rightPriceScale: { borderColor: '#222732' },
+      timeScale: { borderColor: '#222732', timeVisible: false, secondsVisible: false },
+      crosshair: { mode: 1 },
+    });
+    const series = chart.addSeries(LWC.AreaSeries, {
+      lineColor: '#ef4444',
+      topColor: 'rgba(239,68,68,0.02)',
+      bottomColor: 'rgba(239,68,68,0.35)',
+      lineWidth: 1,
+      priceFormat: { type: 'percent', precision: 2, minMove: 0.0001 },
+    });
+    chartRef.current = chart;
+    seriesRef.current = series;
+    return () => { chart.remove(); chartRef.current = null; seriesRef.current = null; };
+  }, []);
+
+  useEffect(() => {
+    if (!seriesRef.current || !timestamps || !drawdown) return;
+    const data = [];
+    let lastTime = -1;
+    for (let i = 0; i < timestamps.length; i++) {
+      const v = drawdown[i];
+      if (v === null || v === undefined || Number.isNaN(v)) continue;
+      const t = isoToUnixSeconds(timestamps[i]);
+      if (t <= lastTime) continue;
+      lastTime = t;
+      // lightweight-charts treats percent format as already-multiplied (e.g. 0.05 = 0.05%).
+      // Our drawdown values are fractional (-0.05 = -5%), so multiply by 100.
+      data.push({ time: t, value: Number(v) * 100 });
+    }
+    seriesRef.current.setData(data);
+    chartRef.current && chartRef.current.timeScale().fitContent();
+  }, [timestamps, drawdown]);
+
+  return html`<div ref=${containerRef} class="w-full h-full"></div>`;
+}
+
+// ---- MultiEquityChart (for pin comparison) -------------------------
+
+function MultiEquityChart({ runs }) {
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current || !LWC || !runs || runs.length === 0) return;
+    const chart = LWC.createChart(containerRef.current, {
+      autoSize: true,
+      layout: {
+        background: { type: 'solid', color: '#0e1014' },
+        textColor: '#9aa3b2',
+        fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+      },
+      grid: { vertLines: { color: '#181c24' }, horzLines: { color: '#181c24' } },
+      rightPriceScale: { borderColor: '#222732' },
+      timeScale: { borderColor: '#222732', timeVisible: false, secondsVisible: false },
+      crosshair: { mode: 1 },
+    });
+
+    runs.forEach((run, idx) => {
+      const color = PIN_COLORS[idx % PIN_COLORS.length];
+      const series = chart.addSeries(LWC.LineSeries, {
+        color,
+        lineWidth: 2,
+        priceFormat: { type: 'price', precision: 0, minMove: 1 },
+      });
+      const data = [];
+      let lastTime = -1;
+      for (let i = 0; i < run.timestamps.length; i++) {
+        const v = run.equity[i];
+        if (v === null || v === undefined || Number.isNaN(v)) continue;
+        const t = isoToUnixSeconds(run.timestamps[i]);
+        if (t <= lastTime) continue;
+        lastTime = t;
+        data.push({ time: t, value: Number(v) });
+      }
+      series.setData(data);
+    });
+
+    chart.timeScale().fitContent();
+    return () => chart.remove();
+  }, [runs]);
+
+  return html`<div ref=${containerRef} class="w-full h-full"></div>`;
+}
+
+// ---- MonthlyHeatmap ------------------------------------------------
+
+function MonthlyHeatmap({ timestamps, returns }) {
+  // Group per-bar returns into months (calendar year × month) and compound them.
+  const monthly = useMemo(() => {
+    if (!timestamps || !returns) return null;
+    const buckets = new Map(); // key 'YYYY-M' -> {year, month, factor}
+    for (let i = 0; i < timestamps.length; i++) {
+      const r = returns[i];
+      if (r === null || r === undefined || Number.isNaN(r)) continue;
+      const d = new Date(timestamps[i]);
+      const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+      let b = buckets.get(key);
+      if (!b) {
+        b = { year: d.getUTCFullYear(), month: d.getUTCMonth(), factor: 1.0 };
+        buckets.set(key, b);
+      }
+      b.factor *= 1 + Number(r);
+    }
+    if (buckets.size === 0) return null;
+    const years = [...new Set([...buckets.values()].map(b => b.year))].sort();
+    const cells = {}; // year -> [12 values, may be null]
+    for (const y of years) cells[y] = Array(12).fill(null);
+    for (const b of buckets.values()) cells[b.year][b.month] = b.factor - 1;
+    const annual = {}; // year -> compounded total
+    for (const y of years) {
+      let f = 1.0;
+      for (const v of cells[y]) if (v !== null) f *= 1 + v;
+      annual[y] = f - 1;
+    }
+    return { years, cells, annual };
+  }, [timestamps, returns]);
+
+  if (!monthly) return null;
+
+  // Find max absolute monthly return for the color scale.
+  let absMax = 0;
+  for (const y of monthly.years) {
+    for (const v of monthly.cells[y]) {
+      if (v !== null && Math.abs(v) > absMax) absMax = Math.abs(v);
+    }
+  }
+  if (absMax === 0) absMax = 0.01;
+
+  function cellColor(v) {
+    if (v === null || Number.isNaN(v)) return '#181c24';
+    const t = Math.min(Math.abs(v) / absMax, 1);
+    const hue = v >= 0 ? 140 : 0; // green or red
+    const sat = 60;
+    const lum = 18 + t * 22; // 18% → 40%
+    return `hsl(${hue}, ${sat}%, ${lum}%)`;
+  }
+
+  const gridCols = `64px ${'1fr '.repeat(12)}80px`;
+
+  return html`
+    <div>
+      <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">Monthly returns</div>
+      <div class="bg-ink-900 border border-ink-700 rounded p-3">
+        <div style=${{ display: 'grid', gridTemplateColumns: gridCols, gap: '2px' }}>
+          <div></div>
+          ${MONTH_LABELS.map(m => html`
+            <div key=${m} class="text-center text-[10px] num text-mute-400 pb-1">${m}</div>
+          `)}
+          <div class="text-center text-[10px] num text-mute-300 pb-1">Year</div>
+
+          ${monthly.years.map(y => html`
+            <div key=${y + '-y'} class="flex items-center justify-end pr-2 text-xs num text-mute-300">${y}</div>
+            ${monthly.cells[y].map((v, mi) => html`
+              <div key=${y + '-' + mi}
+                style=${{ background: cellColor(v), borderRadius: '3px', padding: '4px 2px', textAlign: 'center' }}
+                class="text-[10px] num text-white">
+                ${v === null ? '' : (v * 100).toFixed(1)}
+              </div>
+            `)}
+            <div key=${y + '-tot'}
+              style=${{ background: cellColor(monthly.annual[y]), borderRadius: '3px', padding: '4px 4px', textAlign: 'center' }}
+              class="text-xs num text-white font-semibold">
+              ${(monthly.annual[y] * 100).toFixed(1)}%
+            </div>
+          `)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ---- TradeList (sortable client-side) ------------------------------
+
+function TradeList({ trades, finalEquity, startingCapital }) {
+  const [sortKey, setSortKey] = useState('entry_time');
+  const [sortAsc, setSortAsc] = useState(true);
+  const [showAll, setShowAll] = useState(false);
+
+  if (!trades || trades.length === 0) {
+    return html`
+      <div class="bg-ink-900 border border-ink-700 rounded p-4 text-sm text-mute-400">
+        No trades recorded.
+      </div>
+    `;
+  }
+
+  const sorted = useMemo(() => {
+    const arr = [...trades];
+    arr.sort((a, b) => {
+      const av = a[sortKey];
+      const bv = b[sortKey];
+      // null / undefined sink to the bottom regardless of direction.
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'number') return sortAsc ? av - bv : bv - av;
+      if (av < bv) return sortAsc ? -1 : 1;
+      if (av > bv) return sortAsc ? 1 : -1;
+      return 0;
+    });
+    return arr;
+  }, [trades, sortKey, sortAsc]);
+
+  const visible = showAll ? sorted : sorted.slice(0, 50);
+  const baseCap = startingCapital || 100000;
+
+  function header(key, label, align = 'left') {
+    const active = sortKey === key;
+    const arrow = active ? (sortAsc ? '▲' : '▼') : '';
+    const click = () => {
+      if (sortKey === key) setSortAsc(!sortAsc);
+      else { setSortKey(key); setSortAsc(true); }
+    };
+    return html`
+      <th class="py-2 px-3 text-mute-400 text-xs font-medium text-${align} cursor-pointer hover:text-mute-100 select-none"
+        onClick=${click}>
+        ${label} ${active && html`<span class="text-accent-400 ml-1">${arrow}</span>`}
+      </th>
+    `;
+  }
+
+  return html`
+    <div class="bg-ink-900 border border-ink-700 rounded p-4">
+      <div class="flex items-baseline justify-between mb-2">
+        <div class="text-xs uppercase tracking-wider text-mute-400">Trades</div>
+        <div class="text-xs text-mute-400 num">
+          ${trades.length} total · showing ${visible.length}
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-ink-700">
+              ${header('entry_time', 'Entry')}
+              ${header('exit_time', 'Exit')}
+              ${header('side', 'Side')}
+              ${header('bars_held', 'Bars', 'right')}
+              ${header('entry_price', 'Entry $', 'right')}
+              ${header('exit_price', 'Exit $', 'right')}
+              ${header('pnl_return', 'Return', 'right')}
+              ${header('pnl_dollars', 'P&L', 'right')}
+            </tr>
+          </thead>
+          <tbody>
+            ${visible.map((t, i) => {
+              const ret = t.pnl_return;
+              const pnlDollars = t.pnl_dollars !== undefined ? t.pnl_dollars : (ret != null ? baseCap * ret : null);
+              const profitable = ret > 0;
+              return html`
+                <tr key=${i} class="border-t border-ink-800 hover:bg-ink-850 transition">
+                  <td class="py-1.5 px-3 num text-mute-200">${t.entry_time?.slice(0,10) ?? '—'}</td>
+                  <td class="py-1.5 px-3 num text-mute-200">${t.exit_time?.slice(0,10) ?? '—'}</td>
+                  <td class="py-1.5 px-3 ${t.side === 'long' ? 'text-accent-400' : 'text-blue-400'}">${t.side}</td>
+                  <td class="py-1.5 px-3 text-right num text-mute-200">${fmtInt(t.bars_held)}</td>
+                  <td class="py-1.5 px-3 text-right num text-mute-300">${fmtNum(t.entry_price, 2)}</td>
+                  <td class="py-1.5 px-3 text-right num text-mute-300">${fmtNum(t.exit_price, 2)}</td>
+                  <td class="py-1.5 px-3 text-right num ${profitable ? 'text-accent-400' : 'text-danger-500'}">${fmtPct(ret, 2)}</td>
+                  <td class="py-1.5 px-3 text-right num ${profitable ? 'text-accent-400' : 'text-danger-500'}">${pnlDollars != null ? fmtMoney(pnlDollars) : '—'}</td>
+                </tr>
+              `;
+            })}
+          </tbody>
+        </table>
+      </div>
+      ${trades.length > 50 && html`
+        <div class="mt-3 text-center">
+          <button onClick=${() => setShowAll(s => !s)}
+            class="text-xs text-mute-300 hover:text-mute-100 px-3 py-1 rounded bg-ink-800 hover:bg-ink-700 transition">
+            ${showAll ? `Show first 50` : `Show all ${trades.length}`}
+          </button>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+// ---- PinStrip + ComparisonView -------------------------------------
+
+function PinStrip({ pins, onUnpin, onCompare, comparing }) {
+  if (pins.length === 0) return null;
+  return html`
+    <div class="bg-ink-900 border border-ink-700 rounded p-3 flex items-center gap-3 flex-wrap">
+      <div class="text-[10px] uppercase tracking-wider text-mute-400">Pinned</div>
+      ${pins.map((p, i) => html`
+        <div key=${p.pinId} class="flex items-center gap-2 bg-ink-850 border border-ink-700 rounded px-2 py-1">
+          <span class="inline-block w-2 h-2 rounded-full" style=${{ background: PIN_COLORS[i % PIN_COLORS.length] }}></span>
+          <span class="text-xs text-mute-200">${p.label}</span>
+          <button onClick=${() => onUnpin(p.pinId)}
+            class="text-xs text-mute-400 hover:text-danger-500 transition" title="Unpin">×</button>
+        </div>
+      `)}
+      ${pins.length >= 2 && html`
+        <button onClick=${onCompare}
+          class="ml-auto text-xs px-3 py-1 rounded font-medium transition
+                 ${comparing ? 'bg-accent-500 text-ink-950' : 'bg-ink-800 hover:bg-ink-700 text-mute-100'}">
+          ${comparing ? '✓ Comparing' : 'Compare'}
+        </button>
+      `}
+    </div>
+  `;
+}
+
+function ComparisonView({ pins, onClose }) {
+  // Pick a stable set of metric keys to show across runs.
+  const metricKeys = ['cagr', 'sharpe', 'max_drawdown', 'volatility', 'sortino', 'calmar', 'n_trades', 'win_rate'];
+
+  return html`
+    <div class="p-6 space-y-5">
+      <div class="flex items-baseline justify-between">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400">Comparison</div>
+          <div class="text-lg text-mute-100 font-medium mt-0.5">${pins.length} pinned runs</div>
+        </div>
+        <button onClick=${onClose}
+          class="text-sm text-mute-300 hover:text-mute-100 transition px-2 py-1">
+          ← Back to run
+        </button>
+      </div>
+
+      <div class="h-[420px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
+        <${MultiEquityChart} runs=${pins} />
+      </div>
+
+      <div class="bg-ink-900 border border-ink-700 rounded p-4 overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-ink-700">
+              <th class="text-left py-2 px-3 text-mute-400 text-xs font-medium">Metric</th>
+              ${pins.map((p, i) => html`
+                <th key=${p.pinId} class="text-right py-2 px-3 text-xs font-medium">
+                  <span class="inline-block w-2 h-2 rounded-full mr-2" style=${{ background: PIN_COLORS[i % PIN_COLORS.length] }}></span>
+                  <span class="text-mute-100">${p.label}</span>
+                </th>
+              `)}
+            </tr>
+          </thead>
+          <tbody>
+            ${metricKeys.map(k => html`
+              <tr key=${k} class="border-t border-ink-800">
+                <td class="py-1.5 px-3 text-mute-300">${k.replaceAll('_',' ')}</td>
+                ${pins.map(p => html`
+                  <td key=${p.pinId} class="py-1.5 px-3 text-right num text-mute-100">
+                    ${fmtMetricVal(k, p.metrics?.[k])}
+                  </td>
+                `)}
+              </tr>
+            `)}
+          </tbody>
+        </table>
+      </div>
+    </div>
   `;
 }
 
@@ -996,10 +1431,37 @@ function App() {
     includeDsr: true,
   });
 
+  const [costConfig, setCostConfig] = useState({ ...DEFAULT_COST_CONFIG });
+
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState(null);
   const [result, setResult] = useState(null);
   const [sweepResult, setSweepResult] = useState(null);
+
+  // Pinned runs for comparison mode. Each pin holds the minimum payload
+  // needed to overlay: timestamps, equity, metrics, and a display label.
+  const [pins, setPins] = useState([]);
+  const [comparing, setComparing] = useState(false);
+
+  const handlePin = () => {
+    if (!result || pins.length >= PIN_LIMIT) return;
+    const label = `${selectedStrategy?.name ?? 'run'} · ${config.ticker} · ${result.run_id.slice(0,6)}`;
+    setPins([...pins, {
+      pinId: result.run_id,
+      label,
+      timestamps: result.timestamps,
+      equity: result.equity,
+      metrics: result.metrics,
+      summary: result.summary,
+    }]);
+  };
+  const handleUnpin = (pinId) => {
+    const next = pins.filter(p => p.pinId !== pinId);
+    setPins(next);
+    if (next.length < 2) setComparing(false);
+  };
+  const alreadyPinned = result && pins.some(p => p.pinId === result.run_id);
+  const canPin = !!result && !alreadyPinned && pins.length < PIN_LIMIT;
 
   useEffect(() => {
     let live = true;
@@ -1044,6 +1506,7 @@ function App() {
           start: config.start, end: config.end,
           params,
           starting_capital: config.starting_capital,
+          cost_config: costConfig,
         };
         if (robustness.oos) payload.oos_split = robustness.oosSplit;
         if (robustness.dsr && robustness.nTrials) payload.n_trials = parseInt(robustness.nTrials, 10);
@@ -1083,6 +1546,7 @@ function App() {
           heatmaps,
           include_deflated_sharpe: sweepCfg.includeDsr,
           starting_capital: config.starting_capital,
+          cost_config: costConfig,
         };
 
         setSweepResult(await runSweep(payload));
@@ -1098,6 +1562,9 @@ function App() {
 
   const backtestCanvas = result && runMode === 'backtest' && html`
     <div class="p-6 space-y-6">
+      <${PinStrip} pins=${pins} onUnpin=${handleUnpin}
+        onCompare=${() => setComparing(true)} comparing=${comparing} />
+
       <div>
         <div class="flex items-baseline justify-between">
           <div>
@@ -1106,10 +1573,26 @@ function App() {
               ${selectedStrategy?.name ?? '—'}
             </div>
           </div>
-          <div class="text-xs text-mute-400 num">run ${result.run_id.slice(0,8)}…</div>
+          <div class="flex items-center gap-3">
+            <div class="text-xs text-mute-400 num">run ${result.run_id.slice(0,8)}…</div>
+            <button onClick=${handlePin} disabled=${!canPin}
+              class="text-xs px-3 py-1 rounded transition
+                     ${!canPin
+                       ? 'bg-ink-800 text-mute-400 cursor-not-allowed'
+                       : 'bg-accent-600 hover:bg-accent-500 text-white font-medium'}">
+              ${alreadyPinned ? '✓ Pinned' : pins.length >= PIN_LIMIT ? 'Pin limit reached' : '📌 Pin this run'}
+            </button>
+          </div>
         </div>
-        <div class="mt-3 h-[380px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
+        <div class="mt-3 h-[340px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
           <${EquityChart} timestamps=${result.timestamps} equity=${result.equity} />
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">Drawdown</div>
+        <div class="h-[160px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
+          <${DrawdownChart} timestamps=${result.timestamps} drawdown=${result.drawdown} />
         </div>
       </div>
 
@@ -1122,6 +1605,13 @@ function App() {
       ${result.oos && html`<${OOSCompare} oos=${result.oos} />`}
       ${result.monte_carlo && html`<${MCCard} mc=${result.monte_carlo} />`}
       ${result.regimes && html`<${RegimePanel} regimes=${result.regimes} />`}
+
+      <${MonthlyHeatmap} timestamps=${result.timestamps} returns=${result.returns} />
+
+      <${TradeList}
+        trades=${result.trades}
+        finalEquity=${result.summary?.final_equity}
+        startingCapital=${config.starting_capital} />
 
       <div>
         <div class="text-xs uppercase tracking-wider text-mute-400 mb-3">All metrics</div>
@@ -1205,7 +1695,7 @@ function App() {
     <div class="h-full flex flex-col">
       <header class="h-12 shrink-0 border-b border-ink-700 bg-ink-950 flex items-center px-4 gap-4">
         <div class="text-mute-100 font-semibold tracking-tight">Backtester</div>
-        <div class="text-mute-400 text-xs">Phase 6 · authoring + robustness</div>
+        <div class="text-mute-400 text-xs">Phase 7 · full results dashboard</div>
         <div class="ml-auto flex items-center gap-2 text-xs text-mute-300">
           <${StatusDot} ok=${serverOk === true} />
           <span class="num">
@@ -1232,22 +1722,25 @@ function App() {
                   setSelectedId(newId);
                   setView('run');
                 }} />`
-            : html`
-              ${runError && !showCanvas && html`
-                <div class="px-6 pt-6">
-                  <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
-                    ${runError}
+            : comparing
+              ? html`<${ComparisonView} pins=${pins} onClose=${() => setComparing(false)} />`
+              : html`
+                ${runError && !showCanvas && html`
+                  <div class="px-6 pt-6">
+                    <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
+                      ${runError}
+                    </div>
                   </div>
-                </div>
+                `}
+                ${showCanvas ? (runMode === 'backtest' ? backtestCanvas : sweepCanvas) : emptyCanvas}
               `}
-              ${showCanvas ? (runMode === 'backtest' ? backtestCanvas : sweepCanvas) : emptyCanvas}
-            `}
         </main>
 
-        ${view === 'run' && html`<${RightRail}
+        ${view === 'run' && !comparing && html`<${RightRail}
           selectedId=${selectedId} config=${config} setConfig=${setConfig}
           robustness=${robustness} setRobustness=${setRobustness}
           sweepCfg=${sweepCfg} setSweepCfg=${setSweepCfg}
+          costConfig=${costConfig} setCostConfig=${setCostConfig}
           runMode=${runMode} setRunMode=${setRunMode}
           onRun=${onRun} running=${running} />`}
       </div>
