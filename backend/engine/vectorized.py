@@ -39,6 +39,9 @@ class Trade:
     engine does. We define a 'trade' as a contiguous run during which the
     target position is non-zero and the sign is constant. Crossing through
     zero closes a trade and (if the next bar is non-zero) opens a new one.
+
+    `exit_reason` is None for vectorized trades. Event-driven (Phase 9)
+    sets it to 'stop_loss' / 'take_profit' / 'trailing_stop' / 'signal'.
     """
     entry_time: pd.Timestamp
     exit_time: pd.Timestamp
@@ -48,6 +51,7 @@ class Trade:
     exit_price: float
     bars_held: int
     pnl_return: float  # cumulative strategy return over the trade window
+    exit_reason: str | None = None
 
 
 @dataclass

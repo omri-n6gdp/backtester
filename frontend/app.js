@@ -13,7 +13,7 @@ import { python } from '@codemirror/lang-python';
 import { oneDark } from '@codemirror/theme-one-dark';
 
 import {
-  getHealth, listStrategies, runBacktest, runSweep,
+  getHealth, listStrategies, runBacktest, runSweep, runEventDriven,
   validateStrategy, translateStrategy, createStrategy,
   getLibrary, getRun,
 } from './api.js';
@@ -598,12 +598,14 @@ function ComboTable({ combos, bestIndex, selectionMetric, higherIsBetter }) {
 
 function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
                      sweepCfg, setSweepCfg, costConfig, setCostConfig,
+                     eventDriven, setEventDriven,
                      runMode, setRunMode, onRun, running }) {
   const disabled = !selectedId || running;
   const upd = (k, v) => setConfig(c => ({ ...c, [k]: v }));
   const updR = (k, v) => setRobustness(r => ({ ...r, [k]: v }));
   const updS = (k, v) => setSweepCfg(s => ({ ...s, [k]: v }));
   const updC = (k, v) => setCostConfig(c => ({ ...c, [k]: v }));
+  const updED = (k, v) => setEventDriven(s => ({ ...s, [k]: v }));
   const resetCosts = () => setCostConfig(DEFAULT_COST_CONFIG);
 
   const ic = inputCls();
@@ -710,6 +712,45 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
                 checked=${robustness.regimes} onChange=${e => updR('regimes', e.target.checked)} />
               <label for="reg-cb" class="text-xs text-mute-200">Regime analysis (SPY + VIX)</label>
             </div>
+          </div>
+
+          <!-- Event-driven: protective stops -->
+          <div class="pt-1 space-y-2">
+            <div class="flex items-center gap-2">
+              <input type="checkbox" id="ed-cb" class="accent-accent-500"
+                checked=${eventDriven.enabled}
+                onChange=${e => updED('enabled', e.target.checked)} />
+              <label for="ed-cb" class="text-xs text-mute-200">Event-driven (intra-bar stops)</label>
+            </div>
+            ${eventDriven.enabled && html`
+              <div class="grid grid-cols-3 gap-2 pl-6">
+                <${Field} label="Stop loss %">
+                  <input type="number" min="0" max="99" step="0.5"
+                    placeholder="off"
+                    class="w-full bg-ink-850 border border-ink-700 rounded px-1.5 py-1 text-xs num text-mute-100 focus:outline-none focus:border-accent-500"
+                    value=${eventDriven.stop_loss_pct}
+                    onChange=${e => updED('stop_loss_pct', e.target.value)} />
+                </${Field}>
+                <${Field} label="Take profit %">
+                  <input type="number" min="0" max="99" step="0.5"
+                    placeholder="off"
+                    class="w-full bg-ink-850 border border-ink-700 rounded px-1.5 py-1 text-xs num text-mute-100 focus:outline-none focus:border-accent-500"
+                    value=${eventDriven.take_profit_pct}
+                    onChange=${e => updED('take_profit_pct', e.target.value)} />
+                </${Field}>
+                <${Field} label="Trailing %">
+                  <input type="number" min="0" max="99" step="0.5"
+                    placeholder="off"
+                    class="w-full bg-ink-850 border border-ink-700 rounded px-1.5 py-1 text-xs num text-mute-100 focus:outline-none focus:border-accent-500"
+                    value=${eventDriven.trailing_stop_pct}
+                    onChange=${e => updED('trailing_stop_pct', e.target.value)} />
+                </${Field}>
+              </div>
+              <div class="text-[10px] text-mute-400 pl-6">
+                Percent values, e.g. 5 = 5%. Empty disables that stop. Event-driven
+                mode disables OOS / MC / DSR / regimes for this run.
+              </div>
+            `}
           </div>
         `}
 
@@ -1058,6 +1099,18 @@ function TradeList({ trades, finalEquity, startingCapital }) {
 
   const visible = showAll ? sorted : sorted.slice(0, 50);
   const baseCap = startingCapital || 100000;
+  const hasExitReason = trades.some(t => t.exit_reason != null);
+
+  function exitReasonCell(reason) {
+    if (reason == null) return '—';
+    const cls = {
+      stop_loss: 'text-danger-500',
+      take_profit: 'text-accent-400',
+      trailing_stop: 'text-yellow-400',
+      signal: 'text-mute-300',
+    }[reason] || 'text-mute-300';
+    return html`<span class="${cls} text-[10px] uppercase tracking-wide">${reason.replace('_', ' ')}</span>`;
+  }
 
   function header(key, label, align = 'left') {
     const active = sortKey === key;
@@ -1094,6 +1147,7 @@ function TradeList({ trades, finalEquity, startingCapital }) {
               ${header('exit_price', 'Exit $', 'right')}
               ${header('pnl_return', 'Return', 'right')}
               ${header('pnl_dollars', 'P&L', 'right')}
+              ${hasExitReason && header('exit_reason', 'Why exit')}
             </tr>
           </thead>
           <tbody>
@@ -1111,6 +1165,7 @@ function TradeList({ trades, finalEquity, startingCapital }) {
                   <td class="py-1.5 px-3 text-right num text-mute-300">${fmtNum(t.exit_price, 2)}</td>
                   <td class="py-1.5 px-3 text-right num ${profitable ? 'text-accent-400' : 'text-danger-500'}">${fmtPct(ret, 2)}</td>
                   <td class="py-1.5 px-3 text-right num ${profitable ? 'text-accent-400' : 'text-danger-500'}">${pnlDollars != null ? fmtMoney(pnlDollars) : '—'}</td>
+                  ${hasExitReason && html`<td class="py-1.5 px-3">${exitReasonCell(t.exit_reason)}</td>`}
                 </tr>
               `;
             })}
@@ -1495,8 +1550,13 @@ function LibraryView({ onOpenRun, onClose }) {
       single: 'bg-ink-700 text-mute-200',
       sweep: 'bg-blue-600/30 text-blue-300',
       walk_forward: 'bg-yellow-600/30 text-yellow-300',
+      event_driven: 'bg-purple-600/30 text-purple-300',
     }[mode] || 'bg-ink-700 text-mute-200';
-    const label = mode === 'walk_forward' ? 'WF' : mode === 'sweep' ? 'sweep' : 'single';
+    const label =
+      mode === 'walk_forward' ? 'WF' :
+      mode === 'sweep' ? 'sweep' :
+      mode === 'event_driven' ? 'stops' :
+      'single';
     return html`<span class="ml-2 text-[10px] uppercase px-1.5 py-0.5 rounded ${cls}">${label}</span>`;
   }
 
@@ -1652,6 +1712,15 @@ function App() {
 
   const [costConfig, setCostConfig] = useState({ ...DEFAULT_COST_CONFIG });
 
+  // Event-driven (Phase 9) stops. Empty strings on the percent fields
+  // mean "stop disabled"; non-empty parses to a percent number.
+  const [eventDriven, setEventDriven] = useState({
+    enabled: false,
+    stop_loss_pct: '',
+    take_profit_pct: '',
+    trailing_stop_pct: '',
+  });
+
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState(null);
   const [result, setResult] = useState(null);
@@ -1718,6 +1787,34 @@ function App() {
       try {
         let params = {};
         try { params = JSON.parse(config.paramsJson || '{}'); } catch { /* use empty */ }
+
+        // Event-driven mode: hits a separate route. Robustness analyses
+        // (OOS / MC / DSR / regimes) aren't wired into it.
+        if (eventDriven.enabled) {
+          const stopPct = (v) => {
+            const s = String(v ?? '').trim();
+            if (s === '') return null;
+            const n = Number(s);
+            if (!Number.isFinite(n) || n < 0) return null;
+            return n / 100.0;
+          };
+          const stop_config = {
+            stop_loss_pct: stopPct(eventDriven.stop_loss_pct),
+            take_profit_pct: stopPct(eventDriven.take_profit_pct),
+            trailing_stop_pct: stopPct(eventDriven.trailing_stop_pct),
+          };
+          const payload = {
+            strategy_id: selectedId,
+            ticker: config.ticker, timeframe: config.timeframe,
+            start: config.start, end: config.end,
+            params,
+            starting_capital: config.starting_capital,
+            cost_config: costConfig,
+            stop_config,
+          };
+          setResult(await runEventDriven(payload));
+          return; // finally below clears the running flag.
+        }
 
         const payload = {
           strategy_id: selectedId,
@@ -1914,7 +2011,7 @@ function App() {
     <div class="h-full flex flex-col">
       <header class="h-12 shrink-0 border-b border-ink-700 bg-ink-950 flex items-center px-4 gap-4">
         <div class="text-mute-100 font-semibold tracking-tight">Backtester</div>
-        <div class="text-mute-400 text-xs">Phase 8 · strategy library</div>
+        <div class="text-mute-400 text-xs">Phase 9 · event-driven stops</div>
         <div class="ml-auto flex items-center gap-3 text-xs text-mute-300">
           <button onClick=${() => setView(view === 'library' ? 'run' : 'library')}
             class="px-3 py-1 rounded transition font-medium
@@ -1985,6 +2082,7 @@ function App() {
           robustness=${robustness} setRobustness=${setRobustness}
           sweepCfg=${sweepCfg} setSweepCfg=${setSweepCfg}
           costConfig=${costConfig} setCostConfig=${setCostConfig}
+          eventDriven=${eventDriven} setEventDriven=${setEventDriven}
           runMode=${runMode} setRunMode=${setRunMode}
           onRun=${onRun} running=${running} />`}
       </div>

@@ -55,6 +55,15 @@ export async function runSweep(payload) {
   return jsonOrThrow(res);
 }
 
+export async function runEventDriven(payload) {
+  const res = await fetch(`${API_BASE}/backtest/event_driven`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow(res);
+}
+
 export async function validateStrategy(code) {
   const res = await fetch(`${API_BASE}/strategies/validate`, {
     method: 'POST',

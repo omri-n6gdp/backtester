@@ -126,6 +126,40 @@ class BacktestRequest(BaseModel):
     include_regimes: bool = False
 
 
+class StopConfigModel(BaseModel):
+    """Mirror of backend.engine.event_driven.StopConfig.
+
+    All percents are non-negative fractions: 0.05 = 5%. None disables the
+    corresponding stop. At least one stop must be active for the
+    event-driven route to be meaningful (the validator enforces this).
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    stop_loss_pct: float | None = None
+    take_profit_pct: float | None = None
+    trailing_stop_pct: float | None = None
+
+
+class EventDrivenBacktestRequest(BaseModel):
+    """Same shape as BacktestRequest plus a stop_config block.
+
+    The optional analyses (oos_split, monte_carlo, n_trials,
+    include_regimes) are deliberately NOT supported here yet — they're
+    computed at request time and don't depend on the execution model,
+    so they could be wired in later without touching the engine.
+    """
+    strategy_id: str
+    ticker: str
+    timeframe: str = "1d"
+    start: str
+    end: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    cost_config: CostConfigModel | None = None
+    starting_capital: float = 100_000.0
+    bars_per_year: int = 252
+    stop_config: StopConfigModel = Field(default_factory=StopConfigModel)
+
+
 class WindowMetricsModel(BaseModel):
     """IS or OOS window of a backtest, with the window's MetricsBundle."""
     label: str                 # 'in_sample' or 'out_of_sample'
