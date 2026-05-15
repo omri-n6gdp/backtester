@@ -360,19 +360,38 @@ Tests (+13): `tests/test_llm.py` (6 tests) and `tests/test_api_authoring.py` (7 
 
 ---
 
-### Phase 7 — Full run configurator and results dashboard
+### Phase 7 — Full run configurator and results dashboard ✅ COMPLETE
 
-Polished right-rail configurator: asset/timeframe/date pickers, parameter sweep UI, realistic-execution toggles, robustness checkboxes. Main canvas: equity + drawdown + monthly heatmap + trade list + full metrics table + comparison/pinning mode. Phase 7 also indexes columns on the `trades` table for sortable queries.
+Frontend: cost-config editor in the right rail (slippage mode + bps, commission, spread, FX with GBP toggle, borrow — wired to `BacktestRequest.cost_config` / `SweepRequest.cost_config`). Backtest canvas gained `DrawdownChart` (red AreaSeries under equity), `MonthlyHeatmap` (pure-CSS years×months grid, computed client-side from per-bar returns, annual-total column), `TradeList` (client-side sortable table with show-all toggle), `PinStrip` + `ComparisonView` (in-memory pins up to 3; `MultiEquityChart` overlays as colored LineSeries with a side-by-side metric table).
 
-**Done When:** Configure → run → see all panels in one scrollable view. Pinning two runs from a sweep shows them overlaid.
+Schema fix: `CostConfigModel` previously used `fx_fee_bps` / `borrow_cost_bps`, but the engine dataclass uses `fx_bps` / `borrow_bps_annual`. The mismatch was latent — no Phase 0-6 code path actually sent a cost_config. Aligned the schema to the engine names; also added `bars_per_year` for full parity. No backend tests changed.
+
+Scope decision: sweep-combo pinning was deferred. Currently only the best combo carries `full_result` (others are pruned for memory). Phase 8's library view is the better place to pin runs from any source.
+
+**Done When ✅** verified: SPY SMA(50/200) with slippage 5 vs 30 bps produces CAGR 8.30% vs 8.05% (cost wired). Drawdown / monthly heatmap / trade list all render. Pinning 2 runs overlays them in the comparison view.
 
 ---
 
-### Phase 8 — Strategy library and ranking
+### Phase 8 — Strategy library and ranking ✅ COMPLETE
 
-`GET /library?sort=...&filter=...`. `backend/engine/ranking.py` with the default composite weights. Sortable/filterable table with click-through to results. Live weight editor (client-side re-sort).
+`backend/engine/ranking.py` — `compute_run_scores(rows, breadth_map, now)` returns 6 normalized component scores per run in [0,1]: sharpe, calmar, consistency (= sortino/sharpe proxy), breadth (log-saturating around 5 tickers), recency (exp-decay, 90-day half-life), and dsr (null — see below). No internal weighting; the frontend combines.
 
-**Done When:** After running 10+ strategies/sweeps across 5+ assets, library shows them all with sensible composite scores; adjusting weights re-orders them live.
+`backend/db/repo.py` got the read side it always needed: `get_run`, `get_metrics`, `get_curves`, `get_trades`, `list_runs_with_metrics(strategy_id?, ticker?)`, `count_distinct_tickers_per_strategy`.
+
+New routes: `GET /library?strategy_id=&ticker=` (joined runs + metrics + component scores; filters AND-ed) and `GET /runs/{run_id}` (returns the same shape as `POST /backtest`; sweep / walk-forward runs have empty trades — deliberate from earlier phases). `BacktestResponse` gained `strategy_id` so the library click-through can sync the sidebar selection.
+
+Frontend: `LibraryView` with 6 live weight sliders (CLAUDE.md defaults 30/20/15/15/10/10), ticker filter, sortable table with sweep / walk_forward mode badges. Row click → `getRun(id)` → switch to backtest canvas with that run loaded.
+
+Honest substitution notes (call this out if a user asks about scoring):
+- **DSR isn't persisted.** `dsr_score` is null on every row; the frontend redistributes its weight to available components per row, so DSR-less runs aren't unfairly zeroed.
+- **"OOS Sharpe" lands on raw Sharpe.** OOS metrics aren't persisted today (the route computes them on request and returns them in the response, but only the full-period `metrics_json` reaches the DB). The CLAUDE.md doc-default 30% weight for "OOS Sharpe" is honored as raw Sharpe weight.
+- **Consistency** is a sortino/sharpe ratio scaled to [0,1] — a gain-stability proxy, not true rolling-Sharpe stability. Getting the real thing requires loading curves per ranked run; deferred until it matters.
+
+Adding persisted DSR / OOS for true scoring is a schema change (extra columns or sidecar tables) — a future cleanup phase.
+
+Tests: 11 ranking unit tests + 5 API tests. **247 tests passing total.**
+
+**Done When ✅** verified: 8 stored runs from prior sessions return ranked with all 6 component scores. `GET /runs/{id}` round-trips with 3522 bars and 7 trades. Ticker filter works. 404 on bad id.
 
 ---
 
@@ -476,37 +495,36 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 6 — strategy authoring UI (CodeMirror editor + Groq translation). **231 tests passing, all green.**
+**Last completed:** Phase 8 — strategy library and composite ranking. **247 tests passing, all green.**
 
-State at the end of Phase 6:
-- `backend/llm/groq_client.py` — `translate_strategy(description) -> str`. System prompt + 3 few-shot examples. Model: `llama-3.3-70b-versatile`. `_get_client()` is the monkeypatch seam.
-- `backend/api/routes.py` — `POST /strategies/validate` (dry-run, no DB write) and `POST /strategies/translate` (Groq + validation). Groq failure → 502; empty description → 400.
-- `backend/api/schemas.py` — `ValidateStrategyRequest`, `TranslateStrategyRequest`, `TranslateStrategyResponse` (code + validation_result).
-- `frontend/app.js` — `view: 'run' | 'author'`. `AuthorView` component with name/description, plain-English prompt + Generate, CodeMirror 6 editor (Python highlighting, oneDark theme), Validate + Save buttons, inline `ValidationPanel`. "+ New" button in sidebar opens it. Save auto-selects the new strategy and returns to Run mode.
-- `frontend/index.html` — CodeMirror packages added to the esm.sh import map.
-- `frontend/api.js` — `validateStrategy(code)`, `translateStrategy(description)`, `createStrategy(name, description, code)`.
-- Tests: `tests/test_llm.py` (6 tests, mocked Groq) + `tests/test_api_authoring.py` (7 tests).
+State at the end of Phase 8:
+- `backend/engine/ranking.py` — `compute_run_scores(rows, breadth_map, now=None) -> list[ScoredRun]`. Component scores: `sharpe_score`, `calmar_score`, `consistency_score`, `breadth_score`, `recency_score` (all in [0,1]) plus `dsr_score` (null — not persisted today). Saturation knobs at the top of the module (`_SHARPE_SAT=2.0`, `_CALMAR_SAT=3.0`, `_BREADTH_SAT_TICKERS=6`, `_RECENCY_HALFLIFE_DAYS=90`).
+- `backend/db/repo.py` — read helpers: `get_run`, `get_metrics`, `get_curves`, `get_trades`, `list_runs_with_metrics(strategy_id?, ticker?)`, `count_distinct_tickers_per_strategy`.
+- `backend/api/routes.py` — new `GET /library?strategy_id=&ticker=` and `GET /runs/{run_id}`. Both responses use `LibraryResponse` / `BacktestResponse` from schemas.py.
+- `backend/api/schemas.py` — `LibraryRunModel`, `LibraryResponse`; `BacktestResponse` gained `strategy_id: str | None = None` (echoed by `POST /backtest` and `GET /runs/{id}`).
+- Frontend `LibraryView` (in `app.js`) — 6 weight sliders with CLAUDE.md defaults 30/20/15/15/10/10, ticker filter, sortable table with sweep / walk_forward mode badges, row click → `getRun(id)` → backtest canvas with stored run.
+- `frontend/api.js` — `getLibrary(filters)`, `getRun(runId)`.
+- Top-bar "📊 Library" toggle in the header.
+- Tests: `tests/test_ranking.py` (11 tests, pure scoring), `tests/test_api_library.py` (5 tests, /library and /runs round-trip).
 
-Live Done When verified: `/strategies/translate("Buy when RSI(14) crosses above 30, sell when above 70")` → valid code → saved as "RSI Mean Reversion" → backtest SPY 2020-2024 → 11 trades, CAGR 2.77%, Sharpe 0.243.
+Substitution notes carried in Phase 8: DSR not persisted (frontend redistributes weight); "OOS Sharpe" weight lands on raw Sharpe; consistency is a sortino/sharpe proxy. Documented in the Phase 8 section above.
 
-**Next up:** **Phase 7 — full configurator and results dashboard.**
+Live Done When verified: `/library` returned 8 stored runs from prior sessions ranked. `GET /runs/{id}` round-tripped a SPY SMA run with 3522 bars and 7 trades. Ticker filter works. 404 on bad id.
 
-Suggested 7 scope:
-1. **Cost configurator** in the right rail — currently we show defaults as static text; promote to editable inputs for slippage (mode + bps), commission, spread, FX fee + GBP toggle, borrow cost. Wire to `BacktestRequest.cost_config`.
-2. **Drawdown chart** — second lightweight-charts panel under the equity curve, sharing the time axis.
-3. **Monthly returns heatmap** — calendar grid (years × months) with cell colour by monthly return. Pure CSS like the param heatmap.
-4. **Trade list** — sortable table (entry, exit, side, pnl, return, holding period, MAE/MFE if available). Phase 7 also adds SQLite indexes on `trades.run_id` and `trades.entry_time` for sortable queries — the table is small now but indexes matter once Phase 8's library view does cross-run trade queries.
-5. **Comparison / pinning mode** — pin two runs; the equity chart overlays both, the metrics table shows them side by side.
-6. (Stretch) Persist trade list rendering for sweep runs too, via the best combo's `full_result`.
+**Next up:** **Phase 9 — event-driven backtest mode (optional)** or skip to **Phase 10 — Trading 212 read-only integration**.
 
-**Smoke test target for 7:** Configure a SPY SMA backtest with custom slippage (10 bps), run, see equity + drawdown stacked, monthly heatmap with mostly-green years, trade list sortable by pnl, then pin and compare two runs.
+Phase 9 is the right call when a strategy needs intra-bar order types (stop-loss, take-profit, trailing stop, limit fills) that vectorized math can't express cleanly. CLAUDE.md flags it as optional. If none of your current strategies need those order types, skip to Phase 10 and circle back.
+
+Phase 10 is the right call to start exercising the deployment path on Trading 212 Demo — read-only at first (account cash, positions, instruments, orders, pies). No money moves until Phase 11. This unlocks the "Live" view in the frontend that compares backtest tracking to demo reality.
 
 **Persistent strategy ID for smoke runs:** `896013b850a24a1b8fbc47bee509c671` (SPY SMA crossover; persisted from Phase 5.3).
+
+**Schema gap to remember (relevant if Phase 9+ touches scoring):** OOS / DSR / MC results aren't persisted to SQLite today — the route computes them on request and ships them in the response, but only the full-period `metrics_json` reaches the DB. The library's ranking therefore uses raw Sharpe in place of OOS Sharpe and nulls DSR. Fixing this is a schema change (extra columns or sidecar tables).
 
 **To resume in a fresh Claude Code session:**
 1. `cd ~/code/backtester`
 2. `claude` (or `claude resume` to continue a prior session)
 3. First prompt: "Read CLAUDE.md fully. Confirm by summarizing the current resume pointer and the next phase. Don't write any code yet — let's align before starting."
-4. After confirmation: "Let's do Phase 7."
+4. After confirmation: "Let's do Phase 9." or "Let's skip to Phase 10."
 
-The full repo state is reconstructable from git (`git log --oneline` on `main`); the cache lives at `~/.backtester/`; `.env` has the required keys. Total tests: **231 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
+The full repo state is reconstructable from git (`git log --oneline` on `main`); the cache lives at `~/.backtester/`; `.env` has the required keys. Total tests: **247 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
