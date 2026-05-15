@@ -395,11 +395,32 @@ Tests: 11 ranking unit tests + 5 API tests. **247 tests passing total.**
 
 ---
 
-### Phase 9 — Event-driven backtest mode (optional)
+### Phase 9 — Event-driven backtest mode ✅ COMPLETE
 
-`backend/engine/event_driven.py`. Bar-by-bar; supports market/limit/stop orders; stop-loss, take-profit, trailing stop. Optional `on_bar(state, bar) -> orders` strategy form. Numba JIT only if profiling shows it's needed.
+`backend/engine/event_driven.py` — `StopConfig` dataclass (optional `stop_loss_pct` / `take_profit_pct` / `trailing_stop_pct`, all non-negative fractions in `[0, 1)`) plus `run_event_driven(strategy, data, params, *, stop_config, cost_config, starting_capital, bars_per_year) -> BacktestResult`. Same shape as vectorized; the full downstream stack (metrics, OOS, MC, regimes, library) works unchanged.
 
-**Done When:** Strategy with a 5% trailing stop runs and the trade list shows stop-hit exits at expected prices.
+Engine algorithm:
+- Vectorize signals (same `.shift(1)` look-ahead guard as vectorized).
+- Walk bar-by-bar updating `peak_high` / `trough_low` for trailing stops.
+- Check stops in priority order **stop_loss → take_profit → trailing**.
+- On trigger: fill at the trigger price, but if the bar gapped past it (open below SL on a long), fill at the worse open. Partial bar return: held from prev_close to stop_price, then flat.
+- Re-entry: stop closes the position mid-bar (`actual_positions[i] = 0`); if the signal still wants the position, we re-open at THIS bar's close so the NEXT bar holds the new position. "No immediate re-entry" applies only WITHIN the stop-fire bar.
+- Float epsilon `_PRICE_EPS = 1e-9` on trigger comparisons — prevents `100.0 * 1.10 = 110.00000000000001` from silently suppressing at-threshold stops. Real bug caught during testing.
+
+`Trade.exit_reason: str | None` added to the dataclass — None for vectorized trades, `'stop_loss' / 'take_profit' / 'trailing_stop' / 'signal'` for event-driven. Backwards-compatible.
+
+`POST /backtest/event_driven` route; persists `params_json: {mode: 'event_driven', stop_config: {...}}` so the library can badge it. Optional analyses (OOS / MC / DSR / regimes) deliberately NOT wired into this route — they're computed at request time on `/backtest` and `on_bar`-style live state hooks were flagged optional in this phase.
+
+Frontend: "Event-driven (intra-bar stops)" toggle in the Backtest right rail; three percent inputs (SL / TP / trailing); routes to `/backtest/event_driven` when toggled. `TradeList` shows a "Why exit" column when any trade has a non-null `exit_reason` (vectorized runs unchanged). Library badge `stops` (purple) for `event_driven` runs.
+
+Tests (+13): `tests/test_event_driven.py` (10) and `tests/test_api_event_driven.py` (3). **260 tests passing total.**
+
+**Done When ✅ verified live:** SPY 2010-2024 long-and-hold + 5% trailing stop produced **137 trailing-stop exits** (138 trades, last is the final-bar close). Exit prices near peak × 0.95 as expected. CAGR 3.94% vs vectorized 12.89% — trailing stops correctly chop a steady uptrend into pieces.
+
+**Scope notes carried forward:**
+- The `on_bar(state, bar) -> orders` strategy form is still deferred (CLAUDE.md flagged it optional). Adding it would be a small new module without disturbing the existing one.
+- Limit/stop entry orders are skipped — entries are at the bar's close after a signal change, same as vectorized.
+- Numba JIT skipped (CLAUDE.md says only if profiling warrants); the loop runs in ms-scale on daily data.
 
 ---
 
@@ -495,36 +516,41 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 8 — strategy library and composite ranking. **247 tests passing, all green.**
+**Last completed:** Phase 9 — event-driven backtest mode with protective stops. **260 tests passing, all green.**
 
-State at the end of Phase 8:
-- `backend/engine/ranking.py` — `compute_run_scores(rows, breadth_map, now=None) -> list[ScoredRun]`. Component scores: `sharpe_score`, `calmar_score`, `consistency_score`, `breadth_score`, `recency_score` (all in [0,1]) plus `dsr_score` (null — not persisted today). Saturation knobs at the top of the module (`_SHARPE_SAT=2.0`, `_CALMAR_SAT=3.0`, `_BREADTH_SAT_TICKERS=6`, `_RECENCY_HALFLIFE_DAYS=90`).
-- `backend/db/repo.py` — read helpers: `get_run`, `get_metrics`, `get_curves`, `get_trades`, `list_runs_with_metrics(strategy_id?, ticker?)`, `count_distinct_tickers_per_strategy`.
-- `backend/api/routes.py` — new `GET /library?strategy_id=&ticker=` and `GET /runs/{run_id}`. Both responses use `LibraryResponse` / `BacktestResponse` from schemas.py.
-- `backend/api/schemas.py` — `LibraryRunModel`, `LibraryResponse`; `BacktestResponse` gained `strategy_id: str | None = None` (echoed by `POST /backtest` and `GET /runs/{id}`).
-- Frontend `LibraryView` (in `app.js`) — 6 weight sliders with CLAUDE.md defaults 30/20/15/15/10/10, ticker filter, sortable table with sweep / walk_forward mode badges, row click → `getRun(id)` → backtest canvas with stored run.
-- `frontend/api.js` — `getLibrary(filters)`, `getRun(runId)`.
-- Top-bar "📊 Library" toggle in the header.
-- Tests: `tests/test_ranking.py` (11 tests, pure scoring), `tests/test_api_library.py` (5 tests, /library and /runs round-trip).
+State at the end of Phase 9:
+- `backend/engine/event_driven.py` — `StopConfig` + `run_event_driven`. Bar-by-bar engine; same `BacktestResult` shape as vectorized.
+- `Trade.exit_reason: str | None` added (None for vectorized; `stop_loss / take_profit / trailing_stop / signal` for event-driven).
+- `POST /backtest/event_driven` route; persists `params_json: {mode: 'event_driven', stop_config: {...}}`.
+- `backend/api/schemas.py` — `StopConfigModel`, `EventDrivenBacktestRequest`.
+- Frontend: stops toggle + 3 percent inputs in the Backtest right rail; `TradeList` shows "Why exit" column when any trade has it; library badge `stops` (purple) for event_driven runs.
+- `frontend/api.js` — `runEventDriven(payload)`.
+- Tests: `tests/test_event_driven.py` (10, including exact-price assertions on synthetic OHLCV with gap-down semantics) and `tests/test_api_event_driven.py` (3).
 
-Substitution notes carried in Phase 8: DSR not persisted (frontend redistributes weight); "OOS Sharpe" weight lands on raw Sharpe; consistency is a sortino/sharpe proxy. Documented in the Phase 8 section above.
+Live Done When verified: SPY 2010-2024 long-and-hold + 5% trailing stop → **137 trailing-stop exits**, fill prices near peak × 0.95, CAGR 3.94% vs vectorized 12.89%.
 
-Live Done When verified: `/library` returned 8 stored runs from prior sessions ranked. `GET /runs/{id}` round-tripped a SPY SMA run with 3522 bars and 7 trades. Ticker filter works. 404 on bad id.
+**Bugs caught during Phase 9 (documented for future event-style work):**
+1. Float imprecision in stop-trigger comparisons (`100.0 * 1.10 != 110.0` exactly) was silently suppressing at-threshold triggers. Fixed with `_PRICE_EPS = 1e-9` on every comparison. If you ever add new order types here, follow the same pattern.
+2. An initial `continue` after a stop-fire over-suppressed the next-bar re-entry. Removed it — the stop bar's actual position is already 0, and the signal-change branch correctly arms the next bar.
 
-**Next up:** **Phase 9 — event-driven backtest mode (optional)** or skip to **Phase 10 — Trading 212 read-only integration**.
+**Next up:** **Phase 10 — Trading 212 read-only integration.**
 
-Phase 9 is the right call when a strategy needs intra-bar order types (stop-loss, take-profit, trailing stop, limit fills) that vectorized math can't express cleanly. CLAUDE.md flags it as optional. If none of your current strategies need those order types, skip to Phase 10 and circle back.
-
-Phase 10 is the right call to start exercising the deployment path on Trading 212 Demo — read-only at first (account cash, positions, instruments, orders, pies). No money moves until Phase 11. This unlocks the "Live" view in the frontend that compares backtest tracking to demo reality.
+Suggested Phase 10 scope:
+1. `backend/t212/__init__.py` + `backend/t212/client.py` — httpx wrapper around the T212 v0 API. Auth model: T212 v0 uses a direct API-key header (`Authorization: <key>`, no Basic prefix). Demo base URL `https://demo.trading212.com/api/v0/`. The CLAUDE.md mention of "Basic with key:secret base64-encoded" is dated; verify with a live curl before committing the client.
+2. `backend/t212/instruments.py` — daily Parquet cache for the (large) instruments list, similar pattern to `data/prices.py`. Mapping helpers: `find_by_ticker(ticker)` to look up T212 instrument codes.
+3. Routes: `GET /t212/account`, `GET /t212/positions`, `GET /t212/orders`, `GET /t212/instruments`, `GET /t212/pies`. All hit Demo only; Live URL is NOT configurable from the frontend in this phase.
+4. Frontend "Live" view: new top-level view (alongside run / author / library). Tabs for Account / Positions / Orders / Pies. Shows the read-only state; no order entry until Phase 11.
+5. Safeguards: route returns 503 if `T212_DEMO_KEY` is empty in `.env`. Errors from T212 (401, 429, 5xx) surface as 502 with a clear message.
+6. Tests: mock `httpx.Client` to assert auth header construction, response parsing, and error mapping. No live calls in the suite.
 
 **Persistent strategy ID for smoke runs:** `896013b850a24a1b8fbc47bee509c671` (SPY SMA crossover; persisted from Phase 5.3).
 
-**Schema gap to remember (relevant if Phase 9+ touches scoring):** OOS / DSR / MC results aren't persisted to SQLite today — the route computes them on request and ships them in the response, but only the full-period `metrics_json` reaches the DB. The library's ranking therefore uses raw Sharpe in place of OOS Sharpe and nulls DSR. Fixing this is a schema change (extra columns or sidecar tables).
+**Schema gap to remember (still relevant for any future scoring/ranking work):** OOS / DSR / MC results aren't persisted to SQLite today — the route computes them on request and ships them in the response, but only the full-period `metrics_json` reaches the DB. The library's ranking therefore uses raw Sharpe in place of OOS Sharpe and nulls DSR. Fixing this is a schema change (extra columns or sidecar tables).
 
 **To resume in a fresh Claude Code session:**
 1. `cd ~/code/backtester`
 2. `claude` (or `claude resume` to continue a prior session)
 3. First prompt: "Read CLAUDE.md fully. Confirm by summarizing the current resume pointer and the next phase. Don't write any code yet — let's align before starting."
-4. After confirmation: "Let's do Phase 9." or "Let's skip to Phase 10."
+4. After confirmation: "Let's do Phase 10."
 
-The full repo state is reconstructable from git (`git log --oneline` on `main`); the cache lives at `~/.backtester/`; `.env` has the required keys. Total tests: **247 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
+The full repo state is reconstructable from git (`git log --oneline` on `main`); the cache lives at `~/.backtester/`; `.env` has the required keys. Total tests: **260 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
