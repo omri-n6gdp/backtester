@@ -15,6 +15,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import {
   getHealth, listStrategies, runBacktest, runSweep,
   validateStrategy, translateStrategy, createStrategy,
+  getLibrary, getRun,
 } from './api.js';
 
 const html = htm.bind(React.createElement);
@@ -43,6 +44,41 @@ const PIN_COLORS = ['#22c55e', '#3b82f6', '#f59e0b'];
 const PIN_LIMIT = 3;
 
 const MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// CLAUDE.md default composite weights for the library view.
+const DEFAULT_LIB_WEIGHTS = {
+  sharpe: 30,
+  calmar: 20,
+  consistency: 15,
+  dsr: 15,
+  breadth: 10,
+  recency: 10,
+};
+
+// Combine a row's component scores with user weights. Components whose score
+// is null (currently just DSR) have their weight redistributed pro rata to the
+// available components — so DSR-less runs aren't unfairly zeroed.
+function compositeScore(row, weights) {
+  const components = [
+    ['sharpe',      row.sharpe_score],
+    ['calmar',      row.calmar_score],
+    ['consistency', row.consistency_score],
+    ['dsr',         row.dsr_score],
+    ['breadth',     row.breadth_score],
+    ['recency',     row.recency_score],
+  ];
+  let totalActiveWeight = 0;
+  for (const [name, val] of components) {
+    if (val !== null && val !== undefined) totalActiveWeight += weights[name];
+  }
+  if (totalActiveWeight === 0) return 0;
+  let score = 0;
+  for (const [name, val] of components) {
+    if (val === null || val === undefined) continue;
+    score += (weights[name] / totalActiveWeight) * val;
+  }
+  return score;
+}
 
 // ---- helpers -------------------------------------------------------
 
@@ -1392,6 +1428,189 @@ function AuthorView({ onCancel, onSaved }) {
   `;
 }
 
+// ---- LibraryView (Phase 8) -----------------------------------------
+
+function LibraryView({ onOpenRun, onClose }) {
+  const [runs, setRuns] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [weights, setWeights] = useState(DEFAULT_LIB_WEIGHTS);
+  const [sortKey, setSortKey] = useState('score');
+  const [sortAsc, setSortAsc] = useState(false);
+  const [tickerFilter, setTickerFilter] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    getLibrary()
+      .then(body => { if (live) setRuns(body.runs); })
+      .catch(err => { if (live) setLoadError(err.message); });
+    return () => { live = false; };
+  }, []);
+
+  const scored = useMemo(() => {
+    if (!runs) return null;
+    return runs.map(r => ({ ...r, score: compositeScore(r, weights) }));
+  }, [runs, weights]);
+
+  const filtered = useMemo(() => {
+    if (!scored) return null;
+    const q = tickerFilter.trim().toUpperCase();
+    if (!q) return scored;
+    return scored.filter(r => r.ticker.toUpperCase().includes(q));
+  }, [scored, tickerFilter]);
+
+  const sorted = useMemo(() => {
+    if (!filtered) return null;
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const av = a[sortKey];
+      const bv = b[sortKey];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'number') return sortAsc ? av - bv : bv - av;
+      if (av < bv) return sortAsc ? -1 : 1;
+      if (av > bv) return sortAsc ? 1 : -1;
+      return 0;
+    });
+    return arr;
+  }, [filtered, sortKey, sortAsc]);
+
+  function header(key, label, align = 'left') {
+    const active = sortKey === key;
+    const arrow = active ? (sortAsc ? '▲' : '▼') : '';
+    const click = () => {
+      if (sortKey === key) setSortAsc(!sortAsc);
+      else { setSortKey(key); setSortAsc(key !== 'created_at' && key !== 'strategy_name'); }
+    };
+    return html`
+      <th class="py-2 px-3 text-mute-400 text-xs font-medium text-${align} cursor-pointer hover:text-mute-100 select-none"
+        onClick=${click}>
+        ${label} ${active && html`<span class="text-accent-400 ml-1">${arrow}</span>`}
+      </th>
+    `;
+  }
+
+  function modeBadge(mode) {
+    const cls = {
+      single: 'bg-ink-700 text-mute-200',
+      sweep: 'bg-blue-600/30 text-blue-300',
+      walk_forward: 'bg-yellow-600/30 text-yellow-300',
+    }[mode] || 'bg-ink-700 text-mute-200';
+    const label = mode === 'walk_forward' ? 'WF' : mode === 'sweep' ? 'sweep' : 'single';
+    return html`<span class="ml-2 text-[10px] uppercase px-1.5 py-0.5 rounded ${cls}">${label}</span>`;
+  }
+
+  return html`
+    <div class="p-6 space-y-5">
+      <div class="flex items-baseline justify-between">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400">Strategy library</div>
+          <div class="text-lg text-mute-100 font-medium mt-0.5">
+            ${runs ? `${runs.length} stored runs` : 'loading…'}
+          </div>
+        </div>
+        <button onClick=${onClose}
+          class="text-sm text-mute-300 hover:text-mute-100 transition px-2 py-1">
+          ← Back to run
+        </button>
+      </div>
+
+      <!-- Weight editor -->
+      <div class="bg-ink-900 border border-ink-700 rounded p-4">
+        <div class="flex items-baseline justify-between mb-3">
+          <div class="text-xs uppercase tracking-wider text-mute-400">Composite weights</div>
+          <button onClick=${() => setWeights(DEFAULT_LIB_WEIGHTS)}
+            class="text-[10px] text-mute-400 hover:text-mute-100 transition">
+            reset to defaults
+          </button>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          ${Object.entries(weights).map(([key, val]) => html`
+            <div key=${key}>
+              <div class="flex items-baseline justify-between text-xs">
+                <span class="text-mute-300 capitalize">${key}</span>
+                <span class="num text-mute-100 font-semibold">${val}%</span>
+              </div>
+              <input type="range" min="0" max="100" step="1" value=${val}
+                onChange=${e => setWeights(w => ({ ...w, [key]: Number(e.target.value) }))}
+                class="w-full accent-accent-500 mt-1" />
+            </div>
+          `)}
+        </div>
+        <div class="mt-3 text-[10px] text-mute-400">
+          Weights are relative — they don't need to sum to 100. The DSR component is null until DSR is persisted per run; its weight is redistributed pro rata to available components.
+        </div>
+      </div>
+
+      <!-- Filter -->
+      <div class="flex items-center gap-3">
+        <div class="text-xs text-mute-400">Filter by ticker</div>
+        <input type="text" placeholder="e.g. SPY"
+          class="bg-ink-850 border border-ink-700 rounded px-2 py-1 text-sm num text-mute-100 w-32 focus:outline-none focus:border-accent-500"
+          value=${tickerFilter}
+          onChange=${e => setTickerFilter(e.target.value)} />
+        ${tickerFilter && html`
+          <button onClick=${() => setTickerFilter('')}
+            class="text-xs text-mute-400 hover:text-mute-100">clear</button>
+        `}
+      </div>
+
+      ${loadError && html`
+        <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
+          Failed to load library: ${loadError}
+        </div>
+      `}
+
+      ${sorted && sorted.length === 0 && html`
+        <div class="bg-ink-900 border border-ink-700 rounded p-6 text-center text-mute-400 text-sm">
+          ${runs.length === 0
+            ? 'No runs yet. Run some backtests or sweeps to populate the library.'
+            : 'No runs match the current filter.'}
+        </div>
+      `}
+
+      ${sorted && sorted.length > 0 && html`
+        <div class="bg-ink-900 border border-ink-700 rounded overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-ink-700">
+                ${header('strategy_name', 'Strategy')}
+                ${header('ticker', 'Ticker')}
+                ${header('timeframe', 'TF')}
+                <th class="text-left py-2 px-3 text-mute-400 text-xs font-medium">Period</th>
+                ${header('created_at', 'Run at')}
+                <th class="text-right py-2 px-3 text-mute-400 text-xs font-medium">CAGR</th>
+                <th class="text-right py-2 px-3 text-mute-400 text-xs font-medium">Sharpe</th>
+                <th class="text-right py-2 px-3 text-mute-400 text-xs font-medium">Calmar</th>
+                <th class="text-right py-2 px-3 text-mute-400 text-xs font-medium">Max DD</th>
+                ${header('score', '★ Score', 'right')}
+              </tr>
+            </thead>
+            <tbody>
+              ${sorted.map(r => html`
+                <tr key=${r.run_id}
+                  onClick=${() => onOpenRun(r.run_id)}
+                  class="border-t border-ink-800 hover:bg-ink-850 transition cursor-pointer">
+                  <td class="py-2 px-3 text-mute-100">${r.strategy_name}${modeBadge(r.mode)}</td>
+                  <td class="py-2 px-3 num text-mute-200">${r.ticker}</td>
+                  <td class="py-2 px-3 num text-mute-400">${r.timeframe}</td>
+                  <td class="py-2 px-3 num text-mute-400 text-xs">${r.start_date.slice(0,10)} → ${r.end_date.slice(0,10)}</td>
+                  <td class="py-2 px-3 num text-mute-400 text-xs">${r.created_at?.slice(0,10) ?? '—'}</td>
+                  <td class="py-2 px-3 text-right num ${(r.metrics?.cagr ?? 0) > 0 ? 'text-accent-400' : 'text-danger-500'}">${fmtPct(r.metrics?.cagr)}</td>
+                  <td class="py-2 px-3 text-right num text-mute-100">${fmtNum(r.metrics?.sharpe, 2)}</td>
+                  <td class="py-2 px-3 text-right num text-mute-200">${fmtNum(r.metrics?.calmar, 2)}</td>
+                  <td class="py-2 px-3 text-right num text-danger-500">${fmtPct(r.metrics?.max_drawdown)}</td>
+                  <td class="py-2 px-3 text-right num text-accent-400 font-semibold">${(r.score * 100).toFixed(1)}</td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+  `;
+}
+
 // ---- App -----------------------------------------------------------
 
 function App() {
@@ -1695,14 +1914,23 @@ function App() {
     <div class="h-full flex flex-col">
       <header class="h-12 shrink-0 border-b border-ink-700 bg-ink-950 flex items-center px-4 gap-4">
         <div class="text-mute-100 font-semibold tracking-tight">Backtester</div>
-        <div class="text-mute-400 text-xs">Phase 7 · full results dashboard</div>
-        <div class="ml-auto flex items-center gap-2 text-xs text-mute-300">
-          <${StatusDot} ok=${serverOk === true} />
-          <span class="num">
-            ${serverOk === null ? 'connecting…'
-              : serverOk ? `server ok · v${serverVersion}`
-              : 'server unreachable @ 127.0.0.1:8000'}
-          </span>
+        <div class="text-mute-400 text-xs">Phase 8 · strategy library</div>
+        <div class="ml-auto flex items-center gap-3 text-xs text-mute-300">
+          <button onClick=${() => setView(view === 'library' ? 'run' : 'library')}
+            class="px-3 py-1 rounded transition font-medium
+                   ${view === 'library'
+                     ? 'bg-accent-500 text-ink-950'
+                     : 'bg-ink-800 hover:bg-ink-700 text-mute-100'}">
+            📊 Library
+          </button>
+          <div class="flex items-center gap-2">
+            <${StatusDot} ok=${serverOk === true} />
+            <span class="num">
+              ${serverOk === null ? 'connecting…'
+                : serverOk ? `server ok · v${serverVersion}`
+                : 'server unreachable @ 127.0.0.1:8000'}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -1722,18 +1950,34 @@ function App() {
                   setSelectedId(newId);
                   setView('run');
                 }} />`
-            : comparing
-              ? html`<${ComparisonView} pins=${pins} onClose=${() => setComparing(false)} />`
-              : html`
-                ${runError && !showCanvas && html`
-                  <div class="px-6 pt-6">
-                    <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
-                      ${runError}
+            : view === 'library'
+              ? html`<${LibraryView}
+                  onClose=${() => setView('run')}
+                  onOpenRun=${async (runId) => {
+                    try {
+                      const r = await getRun(runId);
+                      setResult(r);
+                      setRunMode('backtest');
+                      setRunError(null);
+                      setView('run');
+                      if (r.strategy_id) setSelectedId(r.strategy_id);
+                    } catch (err) {
+                      setRunError(`Failed to load run: ${err.message}`);
+                      setView('run');
+                    }
+                  }} />`
+              : comparing
+                ? html`<${ComparisonView} pins=${pins} onClose=${() => setComparing(false)} />`
+                : html`
+                  ${runError && !showCanvas && html`
+                    <div class="px-6 pt-6">
+                      <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
+                        ${runError}
+                      </div>
                     </div>
-                  </div>
+                  `}
+                  ${showCanvas ? (runMode === 'backtest' ? backtestCanvas : sweepCanvas) : emptyCanvas}
                 `}
-                ${showCanvas ? (runMode === 'backtest' ? backtestCanvas : sweepCanvas) : emptyCanvas}
-              `}
         </main>
 
         ${view === 'run' && !comparing && html`<${RightRail}

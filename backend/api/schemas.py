@@ -69,6 +69,32 @@ class TranslateStrategyResponse(BaseModel):
     validation_result: ValidationResultModel
 
 
+# ---------- /library (Phase 8) ----------
+class LibraryRunModel(BaseModel):
+    """One ranked run in the strategy library."""
+    run_id: str
+    strategy_id: str
+    strategy_name: str
+    ticker: str
+    timeframe: str
+    start_date: str
+    end_date: str
+    mode: str                          # 'single' | 'sweep' | 'walk_forward'
+    created_at: str
+    metrics: dict[str, Any]
+    # Per-component normalized scores in [0, 1]. dsr_score is null for now.
+    sharpe_score: float
+    calmar_score: float
+    consistency_score: float
+    dsr_score: float | None
+    breadth_score: float
+    recency_score: float
+
+
+class LibraryResponse(BaseModel):
+    runs: list[LibraryRunModel]
+
+
 # ---------- /backtest ----------
 class CostConfigModel(BaseModel):
     """Mirror of backend.engine.costs.CostConfig. Field names match the dataclass."""
@@ -312,6 +338,7 @@ class TradeModel(BaseModel):
 
 class BacktestResponse(BaseModel):
     run_id: str
+    strategy_id: str | None = None
     metrics: dict[str, Any]
     summary: dict[str, Any]            # {cagr, sharpe, max_dd, n_trades, win_rate, final_equity}
     timestamps: list[str]

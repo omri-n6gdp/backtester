@@ -81,3 +81,17 @@ export async function createStrategy(name, description, code) {
   });
   return jsonOrThrow(res);
 }
+
+export async function getLibrary(filters = {}) {
+  const qs = new URLSearchParams();
+  if (filters.strategy_id) qs.set('strategy_id', filters.strategy_id);
+  if (filters.ticker) qs.set('ticker', filters.ticker);
+  const url = qs.toString() ? `${API_BASE}/library?${qs}` : `${API_BASE}/library`;
+  const res = await fetch(url);
+  return jsonOrThrow(res);
+}
+
+export async function getRun(runId) {
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}`);
+  return jsonOrThrow(res);
+}

@@ -135,3 +135,123 @@ def insert_trades(conn: sqlite3.Connection, *, run_id: str, trades: list[dict[st
         "INSERT INTO trades (run_id, seq, data_json) VALUES (?, ?, ?)",
         [(run_id, i, json.dumps(t, default=str)) for i, t in enumerate(trades)],
     )
+
+
+# -------- reads (Phase 8) --------
+
+def get_run(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT id, strategy_id, ticker, timeframe, start_date, end_date,
+               params_json, cost_config_json, starting_capital, bars_per_year, created_at
+        FROM runs WHERE id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_metrics(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT metrics_json FROM metrics WHERE run_id = ?", (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return json.loads(row["metrics_json"])
+
+
+def get_curves(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT timestamps_json, equity_json, drawdown_json, returns_json,
+               costs_json, raw_positions_json, positions_json
+        FROM curves WHERE run_id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "timestamps": json.loads(row["timestamps_json"]),
+        "equity": json.loads(row["equity_json"]),
+        "drawdown": json.loads(row["drawdown_json"]),
+        "returns": json.loads(row["returns_json"]),
+        "costs": json.loads(row["costs_json"]),
+        "raw_positions": json.loads(row["raw_positions_json"]),
+        "positions": json.loads(row["positions_json"]),
+    }
+
+
+def get_trades(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT data_json FROM trades WHERE run_id = ? ORDER BY seq", (run_id,),
+    ).fetchall()
+    return [json.loads(r["data_json"]) for r in rows]
+
+
+def list_runs_with_metrics(
+    conn: sqlite3.Connection,
+    *,
+    strategy_id: str | None = None,
+    ticker: str | None = None,
+) -> list[dict[str, Any]]:
+    """All runs joined with their strategy name and metrics. Filters are AND-ed.
+
+    The metrics_json is parsed for the caller; runs without a metrics row are
+    skipped (shouldn't happen normally — every successful run inserts metrics
+    in the same transaction). Returned rows include the run's `params_json`
+    so callers can distinguish single / sweep / walk-forward modes via the
+    embedded `mode` key.
+    """
+    where_parts = ["s.active = 1"]
+    params: list[Any] = []
+    if strategy_id is not None:
+        where_parts.append("r.strategy_id = ?")
+        params.append(strategy_id)
+    if ticker is not None:
+        where_parts.append("r.ticker = ?")
+        params.append(ticker)
+    where_sql = " AND ".join(where_parts)
+    rows = conn.execute(
+        f"""
+        SELECT r.id AS run_id, r.strategy_id, s.name AS strategy_name,
+               r.ticker, r.timeframe, r.start_date, r.end_date,
+               r.params_json, r.created_at,
+               m.metrics_json
+        FROM runs r
+        JOIN strategies s ON s.id = r.strategy_id
+        LEFT JOIN metrics m ON m.run_id = r.id
+        WHERE {where_sql}
+        ORDER BY r.created_at DESC
+        """,
+        params,
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if r["metrics_json"] is None:
+            continue
+        params_dict = json.loads(r["params_json"]) if r["params_json"] else {}
+        mode = "single"
+        if isinstance(params_dict, dict) and "mode" in params_dict:
+            mode = params_dict["mode"]
+        out.append({
+            "run_id": r["run_id"],
+            "strategy_id": r["strategy_id"],
+            "strategy_name": r["strategy_name"],
+            "ticker": r["ticker"],
+            "timeframe": r["timeframe"],
+            "start_date": r["start_date"],
+            "end_date": r["end_date"],
+            "mode": mode,
+            "created_at": r["created_at"],
+            "metrics": json.loads(r["metrics_json"]),
+        })
+    return out
+
+
+def count_distinct_tickers_per_strategy(conn: sqlite3.Connection) -> dict[str, int]:
+    """{strategy_id: distinct_ticker_count}. Used for breadth scoring."""
+    rows = conn.execute(
+        "SELECT strategy_id, COUNT(DISTINCT ticker) AS n FROM runs GROUP BY strategy_id",
+    ).fetchall()
+    return {r["strategy_id"]: r["n"] for r in rows}

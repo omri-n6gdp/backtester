@@ -31,6 +31,8 @@ from backend.api.schemas import (
     RegimeAnalysisResponseModel,
     RegimeAxisResponseModel,
     RegimeWindowModel,
+    LibraryResponse,
+    LibraryRunModel,
     StrategyCreateRequest,
     StrategyCreateResponse,
     StrategyDetail,
@@ -51,6 +53,7 @@ from backend.db import repo
 from backend.db.conn import connect
 from backend.engine.costs import CostConfig, DEFAULT_COST_CONFIG
 from backend.engine.metrics import compute_metrics
+from backend.engine.ranking import compute_run_scores
 from backend.engine.robustness.oos import WindowResult, split_result
 from backend.engine.robustness.monte_carlo import (
     MonteCarloConfig,
@@ -575,6 +578,7 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
 
     return BacktestResponse(
         run_id=run_id,
+        strategy_id=req.strategy_id,
         metrics=metrics_dict,
         summary=summary,
         timestamps=timestamps,
@@ -907,3 +911,93 @@ def run_sweep_route(req: SweepRequest) -> SweepResponse:
         best_combo_equity=best_equity_list,
     )
 
+
+# -------- /library + /runs/{run_id} (Phase 8) --------
+
+@router.get("/library", response_model=LibraryResponse)
+def library_route(
+    strategy_id: str | None = Query(None),
+    ticker: str | None = Query(None),
+) -> LibraryResponse:
+    """All stored runs joined with metrics + per-run component scores.
+
+    Filters by `strategy_id` and `ticker` (both optional, AND-ed).
+    Ordering is client-side — the frontend combines component scores
+    with user-chosen weights to produce a composite ranking.
+    """
+    with connect() as conn:
+        rows = repo.list_runs_with_metrics(
+            conn, strategy_id=strategy_id, ticker=ticker,
+        )
+        breadth_map = repo.count_distinct_tickers_per_strategy(conn)
+
+    scored = compute_run_scores(rows, breadth_map)
+    return LibraryResponse(runs=[
+        LibraryRunModel(
+            run_id=s.run_id,
+            strategy_id=s.strategy_id,
+            strategy_name=s.strategy_name,
+            ticker=s.ticker,
+            timeframe=s.timeframe,
+            start_date=s.start_date,
+            end_date=s.end_date,
+            mode=s.mode,
+            created_at=s.created_at,
+            metrics=s.metrics,
+            sharpe_score=s.sharpe_score,
+            calmar_score=s.calmar_score,
+            consistency_score=s.consistency_score,
+            dsr_score=s.dsr_score,
+            breadth_score=s.breadth_score,
+            recency_score=s.recency_score,
+        )
+        for s in scored
+    ])
+
+
+@router.get("/runs/{run_id}", response_model=BacktestResponse)
+def get_run_route(run_id: str) -> BacktestResponse:
+    """Load a stored run in the same shape as POST /backtest's response.
+
+    Sweep / walk-forward runs have empty `trades` (deliberately not
+    persisted in earlier phases — their trade pnl_returns are
+    window-relative and would be misleading on a run-level view).
+    """
+    with connect() as conn:
+        run_row = repo.get_run(conn, run_id)
+        if run_row is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        metrics = repo.get_metrics(conn, run_id) or {}
+        curves = repo.get_curves(conn, run_id)
+        trades = repo.get_trades(conn, run_id)
+
+    if curves is None:
+        raise HTTPException(status_code=410, detail="run curves missing on disk")
+
+    equity_list = curves["equity"]
+    summary = {
+        "cagr": metrics.get("cagr"),
+        "sharpe": metrics.get("sharpe"),
+        "max_drawdown": metrics.get("max_drawdown"),
+        "n_trades": len(trades),
+        "win_rate": metrics.get("win_rate"),
+        "final_equity": equity_list[-1] if equity_list else None,
+    }
+    return BacktestResponse(
+        run_id=run_row["id"],
+        strategy_id=run_row["strategy_id"],
+        metrics=metrics,
+        summary=summary,
+        timestamps=curves["timestamps"],
+        equity=equity_list,
+        drawdown=curves["drawdown"],
+        returns=curves["returns"],
+        costs=curves["costs"],
+        raw_positions=curves["raw_positions"],
+        positions=curves["positions"],
+        trades=trades,
+        oos=None,
+        monte_carlo=None,
+        deflated_sharpe=None,
+        regimes=None,
+    )
