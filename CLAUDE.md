@@ -338,21 +338,25 @@ Smoke verdict: SPY bull 83.9% (CAGR +18.7%, Sharpe 1.51); bear 16.1% (CAGR −29
 
 **5.7 Sweep route ✅** `backend/engine/robustness/sweep.py` + new `POST /backtest/sweep` route. Consolidates the grid loop, deflated Sharpe (with empirical V from per-trial Sharpes), and heatmaps. Per-combo metrics returned for every combo; the heavy `BacktestResult` is kept only on the winner (memory hygiene). Failed combos surface as visible artifacts (`error` field + zeroed metrics). Per-combo OOS/MC/regimes are OFF by default — would 5x runtime. `compute_deflated_sharpe` extended with optional `trial_sharpes_variance` kwarg (backward-compat). Sweep runs persist with `params_json: {mode: "sweep", ...}`. 27 sweep tests + 5 new DSR variance tests. **212 tests passing total.**
 
-**5.8 Frontend: robustness dashboard — IN PROGRESS / NEXT.** When a sweep run completes, the main canvas should show: IS vs OOS metrics side by side; walk-forward concatenated equity curve; MC confidence band overlaid on the equity curve; regime metrics table; parameter heatmap (rendered with d3 or a lightweight grid).
+**5.8 Frontend: robustness dashboard ✅** `frontend/app.js` got an Author/Run view split AND mode-aware right rail: Backtest mode exposes OOS/DSR(n_trials)/MC/regimes toggles; Sweep mode has a param-grid JSON textarea + selection metric + heatmap axes + DSR toggle. New components: `DSRCard` (PSR/DSR/expected-max-SR/skew/kurtosis), `OOSCompare` (IS vs OOS cards side by side, OOS highlighted), `MCCard` (actual max DD + percentile rank + P5/P50/P95 DD quantiles), `RegimePanel` (spy_trend + vix_level tables), `HeatmapGrid` (pure-CSS color-mapped grid with legend), `ComboTable` (sorted by score, best combo starred). MC equity bands are trade-indexed (length = n_trades+1) so they cannot be overlaid on the time-series equity chart — the dashboard shows MC distributional stats as a stat card instead, which is what the data actually represents. `SweepResponse` gained `best_combo_timestamps` + `best_combo_equity` so the sweep canvas can render the winner's equity curve. Smoke verified on SPY SMA(9-combo grid): 9/9 heatmap fill, DSR n_trials=9 visible, best combo identified visually. PSR→DSR gap is small (0.6pp) because empirical V is small on a flat parameter surface — that's correct behaviour, not a bug.
 
-**5.9 Test consolidation.** Final cleanup pass across all 5.x modules.
+**5.9 Test consolidation ✅** `tests/conftest.py` extracted: `api_client` fixture (tmp dirs + storage monkeypatches + migrate + TestClient), `make_synthetic_ohlcv`, `install_fake_prices`, `post_strategy` helpers. Four API test files (`test_api`, `test_api_oos`, `test_api_walk_forward`, `test_sweep`) lost ~25 lines of duplicated setup each (net −219 lines of boilerplate, +91 lines of shared infra). New `tests/test_api_robustness.py` (+6 tests) closes the gap on route wiring for `monte_carlo`, `n_trials`, `include_regimes` — engine math was unit-tested but the routes never were. Also fixed a redundant `object.__setattr__` artifact in `_make_combo` (test_sweep.py).
 
 **Done When (5.8 / 5.9):** Running the SMA crossover with a sweep produces a heatmap, OOS metrics, walk-forward equity curve, MC bands, and a deflated Sharpe in the UI. The deflated Sharpe is meaningfully lower than the raw best-of-grid Sharpe.
 
 ---
 
-### Phase 6 — Strategy authoring UI
+### Phase 6 — Strategy authoring UI ✅ COMPLETE
 
-Author and save new strategies in the browser, both as Python code and from plain English.
+`backend/llm/groq_client.py` exposes `translate_strategy(description: str) -> str`. System prompt encodes the strategy contract (signature, allowed imports, banned constructs, position convention) plus 3 few-shot examples: SMA crossover, RSI mean reversion, momentum. Model: `llama-3.3-70b-versatile`. `_get_client()` is a `@lru_cache` seam that tests monkeypatch to a fake — zero real Groq calls in the suite. Markdown fence stripping is defensive: LLMs ignore "code only" instructions sometimes.
 
-CodeMirror 6 via CDN with Python syntax highlighting. "Validate" button → `POST /strategies/validate` (new dry-run-only route). "Save" → `POST /strategies`. `backend/llm/groq_client.py` with `translate_strategy(description: str) -> str`. System prompt constrains output to the strategy function signature; few-shot examples (SMA crossover, RSI mean reversion, momentum). `POST /strategies/translate` returns generated code without saving.
+Two new routes: `POST /strategies/validate` (dry-run validation, no DB write, always 200) and `POST /strategies/translate` (Groq → code + pre-validation result; 400 if description is empty, 502 on Groq failure).
 
-**Done When:** Typing "Buy when RSI(14) crosses above 30, sell when above 70" → Generate → review → Validate (passes) → Save → it appears in the sidebar and runs successfully.
+Frontend: CodeMirror 6 via esm.sh import map (`codemirror`, `@codemirror/lang-python`, `@codemirror/theme-one-dark`). New top-level `view: 'run' | 'author'`; "+ New" button in sidebar opens `AuthorView`. Author UI: name/description inputs, plain-English textarea + Generate button, CodeMirror editor (Python highlighting, dark theme), Validate + Save buttons. `ValidationPanel` component shows pass/fail with inline errors and warnings. Save pre-validates, POSTs `/strategies`, refreshes sidebar, auto-selects the new strategy, returns to Run mode. Right rail hidden in author mode.
+
+Tests (+13): `tests/test_llm.py` (6 tests) and `tests/test_api_authoring.py` (7 tests). **231 tests passing total.**
+
+**Done When ✅ verified end-to-end via live server:** translate "Buy when RSI(14) crosses above 30, sell when above 70" → validation passed → save "RSI Mean Reversion" → backtest SPY 2020-2024 → 11 trades, CAGR 2.77%, Sharpe 0.243.
 
 ---
 
@@ -472,23 +476,30 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 5.7 — sweep route consolidating robustness analyses. **212 tests passing, all green.**
+**Last completed:** Phase 6 — strategy authoring UI (CodeMirror editor + Groq translation). **231 tests passing, all green.**
 
-State at the end of Phase 5.7:
-- `backend/engine/robustness/sweep.py` — `run_sweep(strategy, data, param_grid, *, base_params=None, ..., selection_metric="sharpe", higher_is_better=True, heatmap_requests=None, include_deflated_sharpe=True) -> SweepResult`. `SweepResult` exposes: combos, n_combinations, selection_metric, higher_is_better, best_index, best_combo, deflated_sharpe, heatmaps, param_keys. `ComboResult` has: index, params, metrics, score, error, full_result (only on winner).
-- `backend/engine/robustness/deflated_sharpe.py` — extended with optional `trial_sharpes_variance: float | None = None` kwarg. When provided, replaces the conservative `V = 1/T` default; the sweep route supplies the empirical variance of per-trial Sharpes for a stronger DSR.
-- `backend/api/schemas.py` — added `HeatmapRequestModel`, `HeatmapResponseModel`, `ComboResultModel`, `SweepRequest`, `SweepResponse` (inserted before TradeModel anchor).
-- `backend/api/routes.py` — new `POST /backtest/sweep` endpoint. Marshal helpers `_combo_to_model` and `_heatmap_to_model` inserted before `# -------- /health --------`. Sweep persists to `runs` with `params_json: {mode: "sweep", ...}` so the Phase 8 library view can distinguish them.
+State at the end of Phase 6:
+- `backend/llm/groq_client.py` — `translate_strategy(description) -> str`. System prompt + 3 few-shot examples. Model: `llama-3.3-70b-versatile`. `_get_client()` is the monkeypatch seam.
+- `backend/api/routes.py` — `POST /strategies/validate` (dry-run, no DB write) and `POST /strategies/translate` (Groq + validation). Groq failure → 502; empty description → 400.
+- `backend/api/schemas.py` — `ValidateStrategyRequest`, `TranslateStrategyRequest`, `TranslateStrategyResponse` (code + validation_result).
+- `frontend/app.js` — `view: 'run' | 'author'`. `AuthorView` component with name/description, plain-English prompt + Generate, CodeMirror 6 editor (Python highlighting, oneDark theme), Validate + Save buttons, inline `ValidationPanel`. "+ New" button in sidebar opens it. Save auto-selects the new strategy and returns to Run mode.
+- `frontend/index.html` — CodeMirror packages added to the esm.sh import map.
+- `frontend/api.js` — `validateStrategy(code)`, `translateStrategy(description)`, `createStrategy(name, description, code)`.
+- Tests: `tests/test_llm.py` (6 tests, mocked Groq) + `tests/test_api_authoring.py` (7 tests).
 
-**Next up:** **Phase 5.8 — frontend robustness dashboard.** This is the visual payoff phase. The backend exposes everything; now the dashboard needs to make it intelligible.
+Live Done When verified: `/strategies/translate("Buy when RSI(14) crosses above 30, sell when above 70")` → valid code → saved as "RSI Mean Reversion" → backtest SPY 2020-2024 → 11 trades, CAGR 2.77%, Sharpe 0.243.
 
-Suggested 5.8 scope (Claude Code can refine):
-1. New right-rail "Robustness" config block: OOS toggle, walk-forward toggle, Monte Carlo toggle (with `n_shuffles` input), regimes toggle, heatmap axis pickers.
-2. When a single-backtest run includes OOS/MC/regime/DSR results, render: IS vs OOS metrics side-by-side card; MC P5/P50/P95 band overlaid on equity curve; regime metrics table.
-3. New "Sweep" run mode: configure the param grid + heatmap axes → call `POST /backtest/sweep` → render the heatmap (with a numeric/colormap legend); show the per-combo table sorted by selection metric; render best-combo equity curve.
-4. Subtle UI surfacing for DSR: a small badge near the headline Sharpe showing PSR/DSR; tooltip explains the gap.
+**Next up:** **Phase 7 — full configurator and results dashboard.**
 
-**Smoke test target for 5.8:** SPY SMA crossover, `param_grid: {"short": [10, 20, 50], "long": [100, 150, 200]}`, with `heatmaps: [{"x_param": "short", "y_param": "long", "metric_name": "sharpe"}]`. Expected: 9 combos rendered, heatmap fills 9/9, DSR with `n_trials=9` shown, best combo identified visually.
+Suggested 7 scope:
+1. **Cost configurator** in the right rail — currently we show defaults as static text; promote to editable inputs for slippage (mode + bps), commission, spread, FX fee + GBP toggle, borrow cost. Wire to `BacktestRequest.cost_config`.
+2. **Drawdown chart** — second lightweight-charts panel under the equity curve, sharing the time axis.
+3. **Monthly returns heatmap** — calendar grid (years × months) with cell colour by monthly return. Pure CSS like the param heatmap.
+4. **Trade list** — sortable table (entry, exit, side, pnl, return, holding period, MAE/MFE if available). Phase 7 also adds SQLite indexes on `trades.run_id` and `trades.entry_time` for sortable queries — the table is small now but indexes matter once Phase 8's library view does cross-run trade queries.
+5. **Comparison / pinning mode** — pin two runs; the equity chart overlays both, the metrics table shows them side by side.
+6. (Stretch) Persist trade list rendering for sweep runs too, via the best combo's `full_result`.
+
+**Smoke test target for 7:** Configure a SPY SMA backtest with custom slippage (10 bps), run, see equity + drawdown stacked, monthly heatmap with mostly-green years, trade list sortable by pnl, then pin and compare two runs.
 
 **Persistent strategy ID for smoke runs:** `896013b850a24a1b8fbc47bee509c671` (SPY SMA crossover; persisted from Phase 5.3).
 
@@ -496,6 +507,6 @@ Suggested 5.8 scope (Claude Code can refine):
 1. `cd ~/code/backtester`
 2. `claude` (or `claude resume` to continue a prior session)
 3. First prompt: "Read CLAUDE.md fully. Confirm by summarizing the current resume pointer and the next phase. Don't write any code yet — let's align before starting."
-4. After confirmation: "Let's do Phase 5.8."
+4. After confirmation: "Let's do Phase 7."
 
-The full repo state is reconstructable from git (`git log --oneline` on `main`); the cache lives at `~/.backtester/`; `.env` has the required keys. Total tests: **212 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
+The full repo state is reconstructable from git (`git log --oneline` on `main`); the cache lives at `~/.backtester/`; `.env` has the required keys. Total tests: **231 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
