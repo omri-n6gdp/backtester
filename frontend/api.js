@@ -54,3 +54,30 @@ export async function runSweep(payload) {
   });
   return jsonOrThrow(res);
 }
+
+export async function validateStrategy(code) {
+  const res = await fetch(`${API_BASE}/strategies/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function translateStrategy(description) {
+  const res = await fetch(`${API_BASE}/strategies/translate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description }),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function createStrategy(name, description, code) {
+  const res = await fetch(`${API_BASE}/strategies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, code }),
+  });
+  return jsonOrThrow(res);
+}

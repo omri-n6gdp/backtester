@@ -56,6 +56,19 @@ class StrategyDetail(StrategySummary):
     code: str
 
 
+class ValidateStrategyRequest(BaseModel):
+    code: str = Field(min_length=1)
+
+
+class TranslateStrategyRequest(BaseModel):
+    description: str = Field(min_length=1, max_length=2000)
+
+
+class TranslateStrategyResponse(BaseModel):
+    code: str
+    validation_result: ValidationResultModel
+
+
 # ---------- /backtest ----------
 class CostConfigModel(BaseModel):
     """Mirror of backend.engine.costs.CostConfig. Defaults match DEFAULT_COST_CONFIG."""

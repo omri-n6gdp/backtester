@@ -37,6 +37,9 @@ from backend.api.schemas import (
     StrategySummary,
     SweepRequest,
     SweepResponse,
+    TranslateStrategyRequest,
+    TranslateStrategyResponse,
+    ValidateStrategyRequest,
     ValidationResultModel,
     WalkForwardRequest,
     WalkForwardResponse,
@@ -64,6 +67,7 @@ from backend.engine.robustness.sweep import ComboResult, HeatmapRequest, SweepRe
 from backend.engine.robustness.walk_forward import WindowReport, walk_forward
 from backend.engine.validator import load_validated_strategy, validate_strategy
 from backend.engine.vectorized import run_backtest
+from backend.llm.groq_client import translate_strategy
 from backend.storage import STRATEGIES_DIR
 
 # -------- regime helpers --------
@@ -290,6 +294,30 @@ def create_strategy(req: StrategyCreateRequest) -> StrategyCreateResponse:
 
     return StrategyCreateResponse(
         strategy_id=strategy_id,
+        validation_result=_validation_result_to_model(vresult),
+    )
+
+
+@router.post("/strategies/validate", response_model=ValidationResultModel)
+def validate_strategy_route(req: ValidateStrategyRequest) -> ValidationResultModel:
+    """Dry-run validation. No DB write. Always returns 200 — `ok` says it all."""
+    return _validation_result_to_model(validate_strategy(req.code))
+
+
+@router.post("/strategies/translate", response_model=TranslateStrategyResponse)
+def translate_strategy_route(req: TranslateStrategyRequest) -> TranslateStrategyResponse:
+    """Translate plain English -> Python via Groq. Returns code AND its
+    pre-validation result so the UI can warn before saving."""
+    try:
+        code = translate_strategy(req.description)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"LLM translation failed: {e!s}")
+
+    vresult = validate_strategy(code)
+    return TranslateStrategyResponse(
+        code=code,
         validation_result=_validation_result_to_model(vresult),
     )
 

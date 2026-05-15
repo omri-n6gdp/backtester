@@ -1,17 +1,30 @@
-// app.js — Phase 5.8: robustness dashboard
+// app.js — Phase 5/6: robustness dashboard + strategy authoring
 //
-// Two run modes:
-//   Backtest — single run with optional OOS / DSR / Monte Carlo / regimes
-//   Sweep    — parameter grid sweep with heatmap, per-combo table, DSR
+// Two top-level views: 'run' (backtest/sweep) and 'author' (new strategy).
+// Within 'run', two run modes: 'backtest' and 'sweep'.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import htm from 'htm';
 
-import { getHealth, listStrategies, runBacktest, runSweep } from './api.js';
+import { EditorView, basicSetup } from 'codemirror';
+import { python } from '@codemirror/lang-python';
+import { oneDark } from '@codemirror/theme-one-dark';
+
+import {
+  getHealth, listStrategies, runBacktest, runSweep,
+  validateStrategy, translateStrategy, createStrategy,
+} from './api.js';
 
 const html = htm.bind(React.createElement);
 const LWC = window.LightweightCharts;
+
+const STRATEGY_TEMPLATE = `import pandas as pd
+
+def strategy(data, params):
+    # Return a Series of target positions in [-1.0, +1.0] aligned with data.index.
+    return pd.Series(0.0, index=data.index)
+`;
 
 // ---- helpers -------------------------------------------------------
 
@@ -194,12 +207,19 @@ function FullMetricsTable({ result }) {
   `;
 }
 
-function Sidebar({ strategies, selectedId, onSelect, loading, error, onRefresh }) {
+function Sidebar({ strategies, selectedId, onSelect, loading, error, onRefresh, onNewStrategy }) {
   return html`
     <aside class="w-72 shrink-0 border-r border-ink-700 bg-ink-900 flex flex-col">
       <div class="px-4 py-3 border-b border-ink-700 flex items-center justify-between">
         <div class="text-xs uppercase tracking-wider text-mute-400">Strategies</div>
-        <button onClick=${onRefresh} class="text-xs text-mute-300 hover:text-mute-100 transition" title="Refresh">↻</button>
+        <div class="flex items-center gap-2">
+          <button onClick=${onNewStrategy}
+            class="text-xs px-2 py-0.5 rounded bg-accent-600 hover:bg-accent-500 text-white font-semibold transition"
+            title="New strategy">
+            + New
+          </button>
+          <button onClick=${onRefresh} class="text-xs text-mute-300 hover:text-mute-100 transition" title="Refresh">↻</button>
+        </div>
       </div>
       <div class="flex-1 overflow-y-auto">
         ${loading && html`<div class="px-4 py-3 text-mute-400 text-sm">Loading…</div>`}
@@ -716,6 +736,227 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
   `;
 }
 
+// ---- CodeEditor (CodeMirror 6 wrapper) -----------------------------
+
+function CodeEditor({ initialValue, editorRef }) {
+  const containerRef = useRef(null);
+  const viewRef = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const view = new EditorView({
+      doc: initialValue ?? '',
+      extensions: [basicSetup, python(), oneDark],
+      parent: containerRef.current,
+    });
+    viewRef.current = view;
+    if (editorRef) {
+      editorRef.current = {
+        getValue: () => view.state.doc.toString(),
+        setValue: (val) => {
+          view.dispatch({
+            changes: { from: 0, to: view.state.doc.length, insert: val ?? '' },
+          });
+        },
+      };
+    }
+    return () => {
+      view.destroy();
+      viewRef.current = null;
+      if (editorRef) editorRef.current = null;
+    };
+  }, []);
+
+  return html`<div ref=${containerRef} class="w-full h-full overflow-auto bg-[#282c34]"></div>`;
+}
+
+// ---- AuthorView ----------------------------------------------------
+
+function ValidationPanel({ result }) {
+  if (!result) return null;
+  if (result.ok && result.warnings.length === 0) {
+    return html`
+      <div class="bg-accent-500/10 border border-accent-500/30 rounded p-3 text-sm text-accent-400">
+        ✓ Validation passed — function "${result.strategy_name ?? 'strategy'}" is safe to save.
+      </div>
+    `;
+  }
+  if (result.ok && result.warnings.length > 0) {
+    return html`
+      <div class="bg-yellow-500/10 border border-yellow-500/30 rounded p-3 text-sm text-yellow-400">
+        <div class="font-semibold">✓ Valid, with warnings:</div>
+        <ul class="mt-1 list-disc list-inside text-xs space-y-0.5">
+          ${result.warnings.map((w, i) => html`<li key=${i}>${w}</li>`)}
+        </ul>
+      </div>
+    `;
+  }
+  return html`
+    <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
+      <div class="font-semibold">✗ Validation failed</div>
+      <ul class="mt-1 list-disc list-inside text-xs space-y-0.5">
+        ${result.errors.map((e, i) => html`<li key=${i}>${e}</li>`)}
+      </ul>
+    </div>
+  `;
+}
+
+function AuthorView({ onCancel, onSaved }) {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [englishPrompt, setEnglishPrompt] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [validationResult, setValidationResult] = useState(null);
+  const [authorError, setAuthorError] = useState(null);
+
+  const editorRef = useRef(null);
+
+  const handleGenerate = async () => {
+    if (!englishPrompt.trim()) return;
+    setGenerating(true);
+    setAuthorError(null);
+    setValidationResult(null);
+    try {
+      const resp = await translateStrategy(englishPrompt.trim());
+      editorRef.current?.setValue(resp.code);
+      setValidationResult(resp.validation_result);
+    } catch (err) {
+      setAuthorError(err.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleValidate = async () => {
+    const code = editorRef.current?.getValue() ?? '';
+    if (!code.trim()) {
+      setAuthorError('Editor is empty — write or generate some code first.');
+      return;
+    }
+    setValidating(true);
+    setAuthorError(null);
+    try {
+      const result = await validateStrategy(code);
+      setValidationResult(result);
+    } catch (err) {
+      setAuthorError(err.message);
+    } finally {
+      setValidating(false);
+    }
+  };
+
+  const handleSave = async () => {
+    const code = editorRef.current?.getValue() ?? '';
+    if (!name.trim()) {
+      setAuthorError('Name is required.');
+      return;
+    }
+    if (!code.trim()) {
+      setAuthorError('Editor is empty.');
+      return;
+    }
+    setSaving(true);
+    setAuthorError(null);
+    try {
+      // Pre-validate so we don't waste a save attempt on bad code.
+      const vresult = await validateStrategy(code);
+      setValidationResult(vresult);
+      if (!vresult.ok) {
+        setAuthorError('Code did not pass validation — fix the errors above and try again.');
+        setSaving(false);
+        return;
+      }
+      const created = await createStrategy(name.trim(), description.trim(), code);
+      onSaved(created.strategy_id);
+    } catch (err) {
+      setAuthorError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const busy = generating || validating || saving;
+
+  return html`
+    <div class="p-6 max-w-5xl mx-auto space-y-5">
+      <div class="flex items-baseline justify-between">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400">New strategy</div>
+          <div class="text-lg text-mute-100 font-medium mt-0.5">Author a strategy</div>
+        </div>
+        <button onClick=${onCancel} disabled=${busy}
+          class="text-sm text-mute-300 hover:text-mute-100 transition px-2 py-1 ${busy ? 'opacity-50 cursor-not-allowed' : ''}">
+          ← Cancel
+        </button>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <div class="text-[10px] uppercase tracking-wider text-mute-400 mb-1">Name</div>
+          <input class=${inputCls()} placeholder="e.g. RSI Mean Reversion"
+            value=${name} onChange=${e => setName(e.target.value)} />
+        </div>
+        <div>
+          <div class="text-[10px] uppercase tracking-wider text-mute-400 mb-1">Description (optional)</div>
+          <input class=${inputCls()} placeholder="brief note for the strategy library"
+            value=${description} onChange=${e => setDescription(e.target.value)} />
+        </div>
+      </div>
+
+      <div class="bg-ink-900 border border-ink-700 rounded p-4">
+        <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">
+          Plain English (optional) — Generate fills the editor below
+        </div>
+        <textarea rows="3"
+          class="w-full bg-ink-850 border border-ink-700 rounded px-3 py-2 text-sm text-mute-100 focus:outline-none focus:border-accent-500 resize-none"
+          placeholder='Example: "Buy when RSI(14) crosses above 30, sell when above 70."'
+          value=${englishPrompt}
+          onChange=${e => setEnglishPrompt(e.target.value)} />
+        <div class="mt-2 flex justify-end">
+          <button onClick=${handleGenerate}
+            disabled=${!englishPrompt.trim() || busy}
+            class="px-3 py-1.5 rounded text-xs font-medium transition
+                   ${!englishPrompt.trim() || busy
+                     ? 'bg-ink-700 text-mute-400 cursor-not-allowed'
+                     : 'bg-accent-600 hover:bg-accent-500 text-white'}">
+            ${generating ? 'Generating…' : 'Generate code'}
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">Strategy code (Python)</div>
+        <div class="h-[420px] border border-ink-700 rounded overflow-hidden">
+          <${CodeEditor} initialValue=${STRATEGY_TEMPLATE} editorRef=${editorRef} />
+        </div>
+      </div>
+
+      ${validationResult && html`<${ValidationPanel} result=${validationResult} />`}
+
+      ${authorError && html`
+        <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
+          ${authorError}
+        </div>
+      `}
+
+      <div class="flex gap-3 justify-end">
+        <button onClick=${handleValidate} disabled=${busy}
+          class="px-4 py-2 rounded text-sm font-medium transition
+                 ${busy ? 'bg-ink-700 text-mute-400 cursor-not-allowed' : 'bg-ink-800 hover:bg-ink-700 text-mute-100'}">
+          ${validating ? 'Validating…' : 'Validate'}
+        </button>
+        <button onClick=${handleSave} disabled=${busy || !name.trim()}
+          class="px-4 py-2 rounded text-sm font-semibold transition
+                 ${busy || !name.trim() ? 'bg-ink-700 text-mute-400 cursor-not-allowed' : 'bg-accent-500 hover:bg-accent-400 text-ink-950'}">
+          ${saving ? 'Saving…' : 'Save strategy'}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
 // ---- App -----------------------------------------------------------
 
 function App() {
@@ -725,6 +966,9 @@ function App() {
   const [stratLoading, setStratLoading] = useState(true);
   const [stratError, setStratError] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+
+  // Top-level view: 'run' (backtest/sweep) or 'author' (new strategy).
+  const [view, setView] = useState('run');
 
   const [runMode, setRunMode] = useState('backtest');
 
@@ -961,7 +1205,7 @@ function App() {
     <div class="h-full flex flex-col">
       <header class="h-12 shrink-0 border-b border-ink-700 bg-ink-950 flex items-center px-4 gap-4">
         <div class="text-mute-100 font-semibold tracking-tight">Backtester</div>
-        <div class="text-mute-400 text-xs">Phase 5 · robustness dashboard</div>
+        <div class="text-mute-400 text-xs">Phase 6 · authoring + robustness</div>
         <div class="ml-auto flex items-center gap-2 text-xs text-mute-300">
           <${StatusDot} ok=${serverOk === true} />
           <span class="num">
@@ -975,25 +1219,37 @@ function App() {
       <div class="flex-1 min-h-0 flex">
         <${Sidebar}
           strategies=${strategies} selectedId=${selectedId} onSelect=${setSelectedId}
-          loading=${stratLoading} error=${stratError} onRefresh=${refreshStrategies} />
+          loading=${stratLoading} error=${stratError} onRefresh=${refreshStrategies}
+          onNewStrategy=${() => setView('author')} />
 
         <main class="flex-1 min-w-0 overflow-y-auto bg-ink-950">
-          ${runError && !showCanvas && html`
-            <div class="px-6 pt-6">
-              <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
-                ${runError}
-              </div>
-            </div>
-          `}
-          ${showCanvas ? (runMode === 'backtest' ? backtestCanvas : sweepCanvas) : emptyCanvas}
+          ${view === 'author'
+            ? html`<${AuthorView}
+                onCancel=${() => setView('run')}
+                onSaved=${async (newId) => {
+                  const list = await listStrategies();
+                  setStrategies(list);
+                  setSelectedId(newId);
+                  setView('run');
+                }} />`
+            : html`
+              ${runError && !showCanvas && html`
+                <div class="px-6 pt-6">
+                  <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
+                    ${runError}
+                  </div>
+                </div>
+              `}
+              ${showCanvas ? (runMode === 'backtest' ? backtestCanvas : sweepCanvas) : emptyCanvas}
+            `}
         </main>
 
-        <${RightRail}
+        ${view === 'run' && html`<${RightRail}
           selectedId=${selectedId} config=${config} setConfig=${setConfig}
           robustness=${robustness} setRobustness=${setRobustness}
           sweepCfg=${sweepCfg} setSweepCfg=${setSweepCfg}
           runMode=${runMode} setRunMode=${setRunMode}
-          onRun=${onRun} running=${running} />
+          onRun=${onRun} running=${running} />`}
       </div>
     </div>
   `;
