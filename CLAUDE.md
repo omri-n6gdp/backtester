@@ -519,37 +519,29 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 10 — Trading 212 read-only Demo integration. **311 tests passing, all green.**
+**Last completed:** Phase 11 foundation (11.1–11.4) — Trading 212 deployment engine. **373 tests passing, all green.** Phase 11 is PARTIAL: the scheduler, HTTP routes, and frontend (11.5–11.8) are NOT done yet.
 
-State at the end of Phase 10:
-- `backend/t212/client.py` — httpx wrapper. Auth: `httpx.BasicAuth(T212_DEMO_KEY, T212_DEMO_SECRET)`. Methods: `get_account_cash`, `get_account_metadata`, `get_portfolio`, `get_orders`, `get_instruments`, `get_pies`. Error hierarchy: `T212AuthError` (401), `T212RateLimited` (429 with `retry_after` parsing), `T212UpstreamError` (5xx), `T212TransportError` (timeout/network), `T212Error` (other 4xx).
-- `backend/t212/instruments.py` — daily Parquet cache at `~/.backtester/t212/instruments.parquet` + sidecar `meta.json`. 24h refresh window. `find_by_ticker(query)` does case-insensitive exact match against both `shortName` (e.g. "AAPL") and the T212 code (e.g. "AAPL_US_EQ"). Returns a list — single human tickers can map to multiple venues.
-- `backend/config.py` — `Settings` gains `t212_demo_secret` (required) and `t212_live_secret` (allowed empty until Phase 13).
-- Routes in `backend/api/routes.py`: `GET /t212/account|positions|orders|instruments|pies`. Error mapping: `T212AuthError` / `T212RateLimited` / `T212UpstreamError` / generic → 502, `T212TransportError` → 504, missing-key defense-in-depth → 503.
-- **Phase 10.5 TTL cache** on the four polling routes (`_t212_cache` + `_t212_cached()` helper in `routes.py`). TTLs: account 10s, positions 15s, orders 15s, pies 60s. `/t212/instruments` bypasses this layer (it has its own 24h Parquet cache). Exceptions never poison the cache.
-- Frontend `LiveView` (top-level view alongside run / author / library). Header "Live" toggle button. Four tabs: Account (card grid), Positions / Orders (sortable tables), Pies (cards). Per-tab lazy-load + refresh; structured error messages including T212's `retry_after_seconds` when sent.
-- `frontend/api.js` — `getT212Account`, `getT212Positions`, `getT212Orders`, `getT212Pies`, `getT212Instruments({ refresh })`.
+Phase 10 (read-only Demo integration) shipped earlier and remains green: `backend/t212/client.py` (httpx + `BasicAuth`, read methods + error hierarchy), `backend/t212/instruments.py` (24h Parquet cache + `find_by_ticker`), `GET /t212/*` routes with a TTL cache, and the frontend `LiveView`. See "Commits" / git log for detail.
 
-Live Done When verified in browser (2026-05-19): Live tab opens, Account shows £5,000 free / total on the fresh Demo, three other tabs show clean empty states. Six rapid `/t212/account` calls in 210ms now produce **1 upstream T212 hit** (was 6 before the cache, with intermittent 502s on every-other-click).
+State at the end of Phase 11.4:
+- `backend/t212/client.py` — gained write methods: `place_limit_order`, `place_market_order`, `cancel_order`, `get_order`. T212 v0 order endpoints live-probed; full 15-field response schema documented in the docstrings. Two probe gotchas captured in "Errors I won't make again": DELETE has a post-place race window; trailing slash on `/equity/orders/{id}/` 404s.
+- `backend/db/schema.sql` — three new tables: `deployments` (strategy + ticker + capital + cron + `armed` flag), `orders_sent` (UNIQUE `request_id_hash` is the idempotency key), `fills_received`. `backend/db/repo.py` has the matching insert/get/list/update helpers.
+- `backend/deploy/runner.py` — `compute_intents(...)`: pure-compute. Strategy signal → target $-value → target qty (round 4dp) → diff vs current T212 portfolio → list of `OrderIntent`. NaN signal → flat (mirrors backtest `.fillna(0.0)`); dust threshold 1e-4 shares. No DB writes, no T212 calls.
+- `backend/deploy/orders.py` — `submit_intents(conn, deployment_id, intents)`: hashes each intent (`compute_request_id_hash`), inserts into `orders_sent` (duplicate hash → `SKIPPED_DUPLICATE`), calls the T212 client, records `SUBMITTED` / `FAILED`. Caller owns the transaction. FAILED is terminal for that hash; next bar's fresh `as_of` retries.
 
-**Auth shape gotcha (phase setup cost real time — captured in the "Errors I won't make again" list):** the dated CLAUDE.md note describing "Basic with key:secret base64-encoded" was actually correct. T212 v0 does use Basic auth with `(api_key, secret)`. A bare-key probe 401s on every endpoint, looking indistinguishable from a revoked key. Always probe with both shapes before assuming the credentials are bad.
+**No live order has been placed by the deploy engine yet** — 11.1's probe placed + cancelled one manual test order; the runner/submitter have only been exercised against mocked T212 in tests.
 
-**Commits in Phase 10:**
-1. `4a6e650` Phase 10.1 — T212 client + Basic auth + error mapping (15 tests).
-2. `778a02b` Phase 10.2 — instruments Parquet cache with 24h refresh + find_by_ticker (16 tests).
-3. `657e97d` Phase 10.3 — /t212/* read-only routes with T212Error mapping (15 tests; live-smoke verified).
-4. `1f1ad48` Phase 10.4 — frontend LiveView with four tabs + per-tab lazy-load.
-5. `6be7d74` Phase 10.5 — TTL cache to absorb back-to-back clicks (5 tests; live-smoke: 6 calls in 210ms → 1 upstream hit).
+**Commits in Phase 11 so far:** `05cca03` 11.1 client writes (8 tests) · `8212a58` 11.2 schema + repo (14 tests) · `addc6ac` 11.3 runner (22 tests) · `bc11192` 11.4 idempotent submitter (18 tests).
 
-**Next up:** **Phase 11 — Trading 212 deployment (Demo only).**
+**Next up:** **Phase 11.5 — scheduler**, then 11.6 routes, 11.7 frontend, 11.8 Done-When.
 
-Suggested Phase 11 scope (matching the Phase 11 section of the roadmap above):
-1. New SQLite tables: `deployments`, `orders_sent`, `fills_received`. Migration in `backend/db/conn.py`.
-2. `backend/deploy/runner.py` — computes target-vs-actual position deltas from a strategy + the current `/t212/positions`. Output: list of orders to send.
-3. `backend/deploy/orders.py` — builds idempotent T212 orders. Request ID = stable hash of `(deployment_id, as_of_timestamp, side, qty)` so retries never double-send. Add `backend.t212.client.place_order(...)` calling `POST /equity/orders/limit`/`market`/etc.
-4. `backend/deploy/scheduler.py` — APScheduler is acceptable; simpler cron-in-process is fine too. Triggers `runner.run_once(deployment_id)` at end-of-bar.
-5. Live vs backtest tracking comparison route: `/deployments/{id}/tracking` returns expected vs actual equity curves so the Tracking tab can plot drift.
-6. Frontend: new "Deploy" view + "Tracking" view. Confirmation modal on first deployment ("This will place real orders in Demo. Confirm.").
+Remaining Phase 11 scope:
+- **11.5** `backend/deploy/scheduler.py` — APScheduler (decided with Omri). On startup, load all `armed=1` deployments and register a cron job per `schedule_cron`. Each job: fetch data + portfolio → `runner.compute_intents` → `orders.submit_intents` → `repo.update_deployment_last_run`. In-memory jobstore (deployments reload from SQLite on startup).
+- **11.6** Routes: `POST /deployments` (must require `confirmation_token: "ARM"` in the body — decided with Omri), `GET /deployments`, `GET /deployments/{id}`, `GET /deployments/{id}/tracking` (expected-vs-actual curves), `POST /deployments/{id}/run` (manual trigger), `POST /deployments/{id}/arm` + `/disarm`.
+- **11.7** Frontend: "Deploy" view + "Tracking" view; ARM confirmation modal ("This will place real orders into your T212 Demo account. Type ARM to confirm.").
+- **11.8** Done-When: deploy SMA crossover on AAPL to Demo, run 2+ days, verify orders placed + Tracking plots live-vs-expected.
+
+**Decisions locked for the rest of Phase 11:** APScheduler for scheduling; `confirmation_token: "ARM"` required on `POST /deployments` even for Demo (reused with stricter wording for Phase 13 live).
 
 **Persistent strategy ID for smoke runs:** `896013b850a24a1b8fbc47bee509c671` (SPY SMA crossover; persisted from Phase 5.3).
 
@@ -559,6 +551,6 @@ Suggested Phase 11 scope (matching the Phase 11 section of the roadmap above):
 1. `cd ~/code/backtester`
 2. `claude` (or `claude resume` to continue a prior session)
 3. First prompt: "Read CLAUDE.md fully. Confirm by summarizing the current resume pointer and the next phase. Don't write any code yet — let's align before starting."
-4. After confirmation: "Let's do Phase 11."
+4. After confirmation: "Let's continue Phase 11 from 11.5."
 
-The full repo state is reconstructable from git (`git log --oneline` on `main`); the price cache lives at `~/.backtester/prices/`; the T212 instruments cache at `~/.backtester/t212/`; `.env` has the required `T212_DEMO_KEY` + `T212_DEMO_SECRET`. Total tests: **311 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
+The full repo state is reconstructable from git (`git log --oneline` on `main`); the price cache lives at `~/.backtester/prices/`; the T212 instruments cache at `~/.backtester/t212/`; `.env` has the required `T212_DEMO_KEY` + `T212_DEMO_SECRET`. Total tests: **373 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
