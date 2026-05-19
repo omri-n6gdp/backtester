@@ -16,6 +16,7 @@ import {
   getHealth, listStrategies, runBacktest, runSweep, runEventDriven,
   validateStrategy, translateStrategy, createStrategy,
   getLibrary, getRun,
+  getT212Account, getT212Positions, getT212Orders, getT212Pies,
 } from './api.js';
 
 const html = htm.bind(React.createElement);
@@ -1671,6 +1672,299 @@ function LibraryView({ onOpenRun, onClose }) {
   `;
 }
 
+// ---- LiveView (Phase 10: T212 Demo read-only) ----------------------
+
+function fmtAcctNum(x, digits = 2) {
+  if (x === null || x === undefined || Number.isNaN(x)) return '—';
+  return Number(x).toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function fmtT212Date(s) {
+  if (!s || typeof s !== 'string') return '—';
+  return s.slice(0, 10);
+}
+
+// Pull a clean error string out of a fetch error. The /t212/* routes
+// occasionally send structured detail (e.g. rate-limited with
+// retry_after_seconds) — surface that when present.
+function t212ErrorString(err) {
+  const detail = err?.body?.detail;
+  if (detail && typeof detail === 'object') {
+    const base = detail.message || JSON.stringify(detail);
+    return detail.retry_after_seconds
+      ? `${base} (retry after ${detail.retry_after_seconds}s)`
+      : base;
+  }
+  return err?.message || String(err);
+}
+
+function LiveTabBar({ tab, setTab, refresh, loading }) {
+  const tabs = [
+    { key: 'account', label: 'Account' },
+    { key: 'positions', label: 'Positions' },
+    { key: 'orders', label: 'Orders' },
+    { key: 'pies', label: 'Pies' },
+  ];
+  return html`
+    <div class="flex items-center gap-1 border-b border-ink-700">
+      ${tabs.map(t => html`
+        <button key=${t.key} onClick=${() => setTab(t.key)}
+          class="px-4 py-2 text-sm transition border-b-2 -mb-px
+                 ${tab === t.key
+                   ? 'border-accent-500 text-mute-100 font-medium'
+                   : 'border-transparent text-mute-400 hover:text-mute-100'}">
+          ${t.label}
+        </button>
+      `)}
+      <div class="ml-auto pb-1.5">
+        <button onClick=${() => refresh(tab)} disabled=${loading[tab]}
+          class="text-xs px-3 py-1 rounded bg-ink-800 hover:bg-ink-700 text-mute-200
+                 disabled:opacity-50 transition">
+          ${loading[tab] ? 'refreshing…' : '↻ refresh'}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function LiveLoading({ label }) {
+  return html`
+    <div class="py-12 text-center text-mute-400 text-sm">Loading ${label}…</div>
+  `;
+}
+
+function LiveError({ message, onRetry }) {
+  return html`
+    <div class="py-12 flex flex-col items-center gap-3">
+      <div class="text-danger-500 text-sm max-w-md text-center">${message}</div>
+      <button onClick=${onRetry}
+        class="text-xs px-3 py-1.5 rounded bg-ink-800 hover:bg-ink-700 text-mute-100 transition">
+        Try again
+      </button>
+    </div>
+  `;
+}
+
+function LiveEmpty({ message }) {
+  return html`
+    <div class="py-12 text-center text-mute-400 text-sm">${message}</div>
+  `;
+}
+
+function LiveAccountPanel({ cash }) {
+  // T212 cash dict: free, total, ppl (open P&L), result (realized),
+  // invested, pieCash, blocked. All in account currency.
+  const cards = [
+    { label: 'Total',     value: cash.total,     emphasis: true },
+    { label: 'Free',      value: cash.free },
+    { label: 'Invested',  value: cash.invested },
+    { label: 'Open P&L',  value: cash.ppl,       tone: 'pnl' },
+    { label: 'Result',    value: cash.result,    tone: 'pnl' },
+    { label: 'Pie cash',  value: cash.pieCash },
+    { label: 'Blocked',   value: cash.blocked },
+  ];
+  return html`
+    <div class="space-y-4">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        ${cards.map(c => {
+          const tone = c.tone === 'pnl'
+            ? (c.value > 0 ? 'text-accent-400' : c.value < 0 ? 'text-danger-500' : 'text-mute-100')
+            : 'text-mute-100';
+          const size = c.emphasis ? 'text-2xl' : 'text-xl';
+          return html`
+            <div class="bg-ink-900 border border-ink-700 rounded p-3">
+              <div class="text-[11px] uppercase tracking-wider text-mute-400 mb-1">${c.label}</div>
+              <div class="num ${size} ${tone} font-medium">${fmtAcctNum(c.value)}</div>
+            </div>
+          `;
+        })}
+      </div>
+      <div class="text-xs text-mute-400">
+        Values in account currency. This is a Trading 212 <span class="text-accent-400 font-medium">Demo / Practice</span> account — no real money.
+      </div>
+    </div>
+  `;
+}
+
+function LivePositionsPanel({ positions }) {
+  if (!positions || positions.length === 0) {
+    return html`<${LiveEmpty} message="No open positions yet. Open one in the Trading 212 Demo app and refresh to see it here." />`;
+  }
+  return html`
+    <div class="overflow-x-auto">
+      <table class="min-w-full text-sm">
+        <thead>
+          <tr class="border-b border-ink-700 text-mute-400 text-xs">
+            <th class="py-2 px-3 text-left font-medium">Ticker</th>
+            <th class="py-2 px-3 text-right font-medium">Quantity</th>
+            <th class="py-2 px-3 text-right font-medium">Avg price</th>
+            <th class="py-2 px-3 text-right font-medium">Current</th>
+            <th class="py-2 px-3 text-right font-medium">Open P&L</th>
+            <th class="py-2 px-3 text-right font-medium">FX P&L</th>
+            <th class="py-2 px-3 text-left font-medium">Initial fill</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${positions.map((p, i) => {
+            const ppl = p.ppl ?? 0;
+            const pplTone = ppl > 0 ? 'text-accent-400' : ppl < 0 ? 'text-danger-500' : 'text-mute-100';
+            return html`
+              <tr key=${p.ticker || i} class="border-b border-ink-800 hover:bg-ink-900/60">
+                <td class="py-2 px-3 text-mute-100 font-medium">${p.ticker || '—'}</td>
+                <td class="py-2 px-3 text-right num text-mute-200">${fmtAcctNum(p.quantity, 4)}</td>
+                <td class="py-2 px-3 text-right num text-mute-200">${fmtAcctNum(p.averagePrice)}</td>
+                <td class="py-2 px-3 text-right num text-mute-100">${fmtAcctNum(p.currentPrice)}</td>
+                <td class="py-2 px-3 text-right num ${pplTone}">${fmtAcctNum(p.ppl)}</td>
+                <td class="py-2 px-3 text-right num text-mute-300">${fmtAcctNum(p.fxPpl)}</td>
+                <td class="py-2 px-3 text-mute-300 num text-xs">${fmtT212Date(p.initialFillDate)}</td>
+              </tr>
+            `;
+          })}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function LiveOrdersPanel({ orders }) {
+  if (!orders || orders.length === 0) {
+    return html`<${LiveEmpty} message="No working orders. Place a limit/stop order in the Trading 212 Demo app and refresh to see it here." />`;
+  }
+  return html`
+    <div class="overflow-x-auto">
+      <table class="min-w-full text-sm">
+        <thead>
+          <tr class="border-b border-ink-700 text-mute-400 text-xs">
+            <th class="py-2 px-3 text-left font-medium">Order ID</th>
+            <th class="py-2 px-3 text-left font-medium">Ticker</th>
+            <th class="py-2 px-3 text-left font-medium">Type</th>
+            <th class="py-2 px-3 text-right font-medium">Quantity</th>
+            <th class="py-2 px-3 text-right font-medium">Limit / stop</th>
+            <th class="py-2 px-3 text-left font-medium">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${orders.map((o, i) => {
+            const price = o.limitPrice ?? o.stopPrice ?? null;
+            return html`
+              <tr key=${o.id || i} class="border-b border-ink-800 hover:bg-ink-900/60">
+                <td class="py-2 px-3 text-mute-300 num text-xs">${o.id || '—'}</td>
+                <td class="py-2 px-3 text-mute-100 font-medium">${o.ticker || '—'}</td>
+                <td class="py-2 px-3 text-mute-200 text-xs uppercase">${o.type || '—'}</td>
+                <td class="py-2 px-3 text-right num text-mute-200">${fmtAcctNum(o.quantity, 4)}</td>
+                <td class="py-2 px-3 text-right num text-mute-100">${price !== null ? fmtAcctNum(price) : '—'}</td>
+                <td class="py-2 px-3 text-mute-300 text-xs uppercase">${o.status || '—'}</td>
+              </tr>
+            `;
+          })}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function LivePiesPanel({ pies }) {
+  if (!pies || pies.length === 0) {
+    return html`<${LiveEmpty} message="No pies set up. Create one in the Trading 212 Demo app and refresh to see it here." />`;
+  }
+  return html`
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      ${pies.map((p, i) => html`
+        <div key=${p.id || i} class="bg-ink-900 border border-ink-700 rounded p-3">
+          <div class="flex items-baseline justify-between mb-2">
+            <div class="text-mute-100 font-medium">${p.name || `Pie #${p.id || i}`}</div>
+            <div class="text-mute-400 text-xs num">id ${p.id ?? '—'}</div>
+          </div>
+          <div class="text-xs text-mute-400">Pie cash</div>
+          <div class="num text-lg text-mute-100">${fmtAcctNum(p.cash)}</div>
+        </div>
+      `)}
+    </div>
+  `;
+}
+
+function LiveView({ onClose }) {
+  const [tab, setTab] = useState('account');
+  const [data, setData] = useState({});
+  const [errors, setErrors] = useState({});
+  const [loading, setLoading] = useState({});
+
+  // Defined inside so each refresh closes over the latest setters; the
+  // dependency surface is small enough that this is simpler than useCallback.
+  const fetchers = {
+    account: getT212Account,
+    positions: getT212Positions,
+    orders: getT212Orders,
+    pies: getT212Pies,
+  };
+
+  async function refresh(which) {
+    setLoading(prev => ({ ...prev, [which]: true }));
+    setErrors(prev => ({ ...prev, [which]: null }));
+    try {
+      const result = await fetchers[which]();
+      setData(prev => ({ ...prev, [which]: result }));
+    } catch (err) {
+      setErrors(prev => ({ ...prev, [which]: t212ErrorString(err) }));
+    } finally {
+      setLoading(prev => ({ ...prev, [which]: false }));
+    }
+  }
+
+  // Lazy-load each tab on first activation. Cached results persist across
+  // tab switches; the refresh button re-fetches.
+  useEffect(() => {
+    if (data[tab] === undefined && errors[tab] == null && !loading[tab]) {
+      refresh(tab);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  function renderTab() {
+    if (loading[tab] && data[tab] === undefined) {
+      return html`<${LiveLoading} label=${tab} />`;
+    }
+    if (errors[tab]) {
+      return html`<${LiveError} message=${errors[tab]} onRetry=${() => refresh(tab)} />`;
+    }
+    if (data[tab] === undefined) {
+      return html`<${LiveLoading} label=${tab} />`;
+    }
+    if (tab === 'account')   return html`<${LiveAccountPanel}   cash=${data.account} />`;
+    if (tab === 'positions') return html`<${LivePositionsPanel} positions=${data.positions} />`;
+    if (tab === 'orders')    return html`<${LiveOrdersPanel}    orders=${data.orders} />`;
+    if (tab === 'pies')      return html`<${LivePiesPanel}      pies=${data.pies} />`;
+    return null;
+  }
+
+  return html`
+    <div class="p-6 space-y-4">
+      <div class="flex items-baseline justify-between">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400">Trading 212 · Demo</div>
+          <div class="text-lg text-mute-100 font-medium mt-0.5 flex items-center gap-2">
+            Live account
+            <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-accent-500/20 text-accent-400 font-medium">
+              Read-only · Demo
+            </span>
+          </div>
+        </div>
+        <button onClick=${onClose}
+          class="text-sm text-mute-300 hover:text-mute-100 transition px-2 py-1">
+          ← Back to run
+        </button>
+      </div>
+
+      <${LiveTabBar} tab=${tab} setTab=${setTab} refresh=${refresh} loading=${loading} />
+      ${renderTab()}
+    </div>
+  `;
+}
+
+
 // ---- App -----------------------------------------------------------
 
 function App() {
@@ -2011,14 +2305,21 @@ function App() {
     <div class="h-full flex flex-col">
       <header class="h-12 shrink-0 border-b border-ink-700 bg-ink-950 flex items-center px-4 gap-4">
         <div class="text-mute-100 font-semibold tracking-tight">Backtester</div>
-        <div class="text-mute-400 text-xs">Phase 9 · event-driven stops</div>
+        <div class="text-mute-400 text-xs">Phase 10 · live (read-only Demo)</div>
         <div class="ml-auto flex items-center gap-3 text-xs text-mute-300">
+          <button onClick=${() => setView(view === 'live' ? 'run' : 'live')}
+            class="px-3 py-1 rounded transition font-medium
+                   ${view === 'live'
+                     ? 'bg-accent-500 text-ink-950'
+                     : 'bg-ink-800 hover:bg-ink-700 text-mute-100'}">
+            Live
+          </button>
           <button onClick=${() => setView(view === 'library' ? 'run' : 'library')}
             class="px-3 py-1 rounded transition font-medium
                    ${view === 'library'
                      ? 'bg-accent-500 text-ink-950'
                      : 'bg-ink-800 hover:bg-ink-700 text-mute-100'}">
-            📊 Library
+            Library
           </button>
           <div class="flex items-center gap-2">
             <${StatusDot} ok=${serverOk === true} />
@@ -2063,6 +2364,8 @@ function App() {
                       setView('run');
                     }
                   }} />`
+              : view === 'live'
+                ? html`<${LiveView} onClose=${() => setView('run')} />`
               : comparing
                 ? html`<${ComparisonView} pins=${pins} onClose=${() => setComparing(false)} />`
                 : html`

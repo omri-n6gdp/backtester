@@ -104,3 +104,33 @@ export async function getRun(runId) {
   const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}`);
   return jsonOrThrow(res);
 }
+
+// ---- T212 (Phase 10: read-only Demo) -----------------------------------
+
+export async function getT212Account() {
+  const res = await fetch(`${API_BASE}/t212/account`);
+  return jsonOrThrow(res);
+}
+
+export async function getT212Positions() {
+  const res = await fetch(`${API_BASE}/t212/positions`);
+  return jsonOrThrow(res);
+}
+
+export async function getT212Orders() {
+  const res = await fetch(`${API_BASE}/t212/orders`);
+  return jsonOrThrow(res);
+}
+
+export async function getT212Pies() {
+  const res = await fetch(`${API_BASE}/t212/pies`);
+  return jsonOrThrow(res);
+}
+
+export async function getT212Instruments({ refresh = false } = {}) {
+  const url = refresh
+    ? `${API_BASE}/t212/instruments?refresh=true`
+    : `${API_BASE}/t212/instruments`;
+  const res = await fetch(url);
+  return jsonOrThrow(res);
+}
