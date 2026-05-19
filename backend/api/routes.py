@@ -75,6 +75,8 @@ from backend.engine.validator import load_validated_strategy, validate_strategy
 from backend.engine.vectorized import run_backtest
 from backend.llm.groq_client import translate_strategy
 from backend.storage import STRATEGIES_DIR
+from backend.t212 import client as t212_client
+from backend.t212 import instruments as t212_instruments
 
 # -------- regime helpers --------
 
@@ -1090,6 +1092,83 @@ def run_event_driven_route(req: EventDrivenBacktestRequest) -> BacktestResponse:
         deflated_sharpe=None,
         regimes=None,
     )
+
+
+# -------- /t212/* read-only (Phase 10) --------
+
+def _handle_t212_call(fn, *args, **kwargs):
+    """Run a T212 client call and translate its exception hierarchy into
+    the right HTTPException. Each route is one line: return _handle_t212_call(fn).
+
+    Defense-in-depth 503: backend.config raises hard at import if
+    T212_DEMO_KEY/T212_DEMO_SECRET are empty, so in practice this branch
+    is unreachable on a running server. Kept anyway in case someone
+    monkeypatches the settings or relaxes the from_env() check.
+    """
+    from backend.config import settings as _settings
+    if not _settings.t212_demo_key or not _settings.t212_demo_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="T212 credentials not configured (T212_DEMO_KEY/T212_DEMO_SECRET).",
+        )
+    try:
+        return fn(*args, **kwargs)
+    except t212_client.T212AuthError as e:
+        raise HTTPException(status_code=502, detail=f"T212 auth failed: {e!s}")
+    except t212_client.T212RateLimited as e:
+        # T212 rate-limited us. Pass through the retry hint when present.
+        detail = {"message": str(e)}
+        if e.retry_after is not None:
+            detail["retry_after_seconds"] = e.retry_after
+        raise HTTPException(status_code=502, detail=detail)
+    except t212_client.T212UpstreamError as e:
+        raise HTTPException(status_code=502, detail=f"T212 upstream error: {e!s}")
+    except t212_client.T212TransportError as e:
+        raise HTTPException(status_code=504, detail=f"T212 unreachable: {e!s}")
+    except t212_client.T212Error as e:
+        raise HTTPException(status_code=502, detail=f"T212 error: {e!s}")
+
+
+@router.get("/t212/account")
+def t212_account_route() -> dict[str, Any]:
+    """T212 Demo account cash breakdown.
+
+    Returns the raw T212 cash dict: {free, total, ppl, result, invested,
+    pieCash, blocked}. No transformation — the frontend renders it
+    directly so new T212 fields surface automatically.
+    """
+    return _handle_t212_call(t212_client.get_account_cash)
+
+
+@router.get("/t212/positions")
+def t212_positions_route() -> list[dict[str, Any]]:
+    """T212 Demo open positions. Empty list when nothing is held."""
+    return _handle_t212_call(t212_client.get_portfolio)
+
+
+@router.get("/t212/orders")
+def t212_orders_route() -> list[dict[str, Any]]:
+    """T212 Demo working (open) orders."""
+    return _handle_t212_call(t212_client.get_orders)
+
+
+@router.get("/t212/instruments")
+def t212_instruments_route(
+    refresh: bool = Query(False, description="Bypass the 24h cache and refetch."),
+) -> list[dict[str, Any]]:
+    """T212 tradable instruments, served from the daily Parquet cache.
+
+    Pass ?refresh=true to force a fetch. The full list is ~17K entries /
+    several MB; the frontend should search/filter client-side rather
+    than render everything at once.
+    """
+    return _handle_t212_call(t212_instruments.get_instruments, force_refresh=refresh)
+
+
+@router.get("/t212/pies")
+def t212_pies_route() -> list[dict[str, Any]]:
+    """T212 Demo pies (auto-invest portfolios)."""
+    return _handle_t212_call(t212_client.get_pies)
 
 
 @router.get("/runs/{run_id}", response_model=BacktestResponse)
