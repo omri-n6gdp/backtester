@@ -189,6 +189,214 @@ def get_trades(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
     return [json.loads(r["data_json"]) for r in rows]
 
 
+# -------- deployments / orders / fills (Phase 11) --------
+
+def insert_deployment(
+    conn: sqlite3.Connection,
+    *,
+    deployment_id: str,
+    strategy_id: str,
+    ticker: str,
+    timeframe: str,
+    params_json: str,
+    deployment_capital: float,
+    cost_config_json: str,
+    order_type: str,
+    schedule_cron: str,
+    armed: bool,
+    created_at: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO deployments (
+            id, strategy_id, ticker, timeframe, params_json,
+            deployment_capital, cost_config_json, order_type,
+            schedule_cron, armed, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            deployment_id, strategy_id, ticker, timeframe, params_json,
+            deployment_capital, cost_config_json, order_type,
+            schedule_cron, 1 if armed else 0, created_at,
+        ),
+    )
+
+
+def get_deployment(conn: sqlite3.Connection, deployment_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT id, strategy_id, ticker, timeframe, params_json,
+               deployment_capital, cost_config_json, order_type,
+               schedule_cron, armed, created_at, last_run_at
+        FROM deployments WHERE id = ?
+        """,
+        (deployment_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_deployments(
+    conn: sqlite3.Connection,
+    *,
+    strategy_id: str | None = None,
+    armed_only: bool = False,
+) -> list[dict[str, Any]]:
+    """List deployments. Filters are AND-ed."""
+    sql = (
+        "SELECT id, strategy_id, ticker, timeframe, params_json, "
+        "deployment_capital, cost_config_json, order_type, schedule_cron, "
+        "armed, created_at, last_run_at FROM deployments WHERE 1=1"
+    )
+    args: list[Any] = []
+    if strategy_id is not None:
+        sql += " AND strategy_id = ?"
+        args.append(strategy_id)
+    if armed_only:
+        sql += " AND armed = 1"
+    sql += " ORDER BY created_at DESC"
+    return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+
+def set_deployment_armed(conn: sqlite3.Connection, deployment_id: str, armed: bool) -> bool:
+    """Arm or disarm a deployment. Returns True if the row existed."""
+    cur = conn.execute(
+        "UPDATE deployments SET armed = ? WHERE id = ?",
+        (1 if armed else 0, deployment_id),
+    )
+    return cur.rowcount > 0
+
+
+def update_deployment_last_run(
+    conn: sqlite3.Connection, deployment_id: str, last_run_at: str,
+) -> None:
+    conn.execute(
+        "UPDATE deployments SET last_run_at = ? WHERE id = ?",
+        (last_run_at, deployment_id),
+    )
+
+
+def insert_order(
+    conn: sqlite3.Connection,
+    *,
+    order_id: str,
+    deployment_id: str,
+    request_id_hash: str,
+    as_of_timestamp: str,
+    ticker: str,
+    side: str,
+    qty: float,
+    order_type: str,
+    limit_price: float | None,
+    status: str,
+    created_at: str,
+) -> None:
+    """Persist a new order intent. Raises sqlite3.IntegrityError if
+    request_id_hash already exists — callers MUST catch that and treat
+    it as "already submitted; skip." That is the idempotency primitive
+    for the entire deploy pipeline."""
+    conn.execute(
+        """
+        INSERT INTO orders_sent (
+            id, deployment_id, request_id_hash, as_of_timestamp, ticker,
+            side, qty, order_type, limit_price, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            order_id, deployment_id, request_id_hash, as_of_timestamp, ticker,
+            side, qty, order_type, limit_price, status, created_at,
+        ),
+    )
+
+
+def find_order_by_request_id(
+    conn: sqlite3.Connection, request_id_hash: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT id, deployment_id, request_id_hash, t212_order_id,
+               as_of_timestamp, ticker, side, qty, order_type, limit_price,
+               status, response_json, created_at
+        FROM orders_sent WHERE request_id_hash = ?
+        """,
+        (request_id_hash,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def update_order_status(
+    conn: sqlite3.Connection,
+    order_id: str,
+    *,
+    status: str,
+    t212_order_id: int | None = None,
+    response_json: str | None = None,
+) -> bool:
+    """Update the local status (and optionally the T212 order id +
+    response blob) after submission. Returns True if the row existed."""
+    sets = ["status = ?"]
+    args: list[Any] = [status]
+    if t212_order_id is not None:
+        sets.append("t212_order_id = ?")
+        args.append(t212_order_id)
+    if response_json is not None:
+        sets.append("response_json = ?")
+        args.append(response_json)
+    args.append(order_id)
+    sql = f"UPDATE orders_sent SET {', '.join(sets)} WHERE id = ?"
+    return conn.execute(sql, args).rowcount > 0
+
+
+def list_orders_for_deployment(
+    conn: sqlite3.Connection, deployment_id: str,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT id, deployment_id, request_id_hash, t212_order_id,
+               as_of_timestamp, ticker, side, qty, order_type, limit_price,
+               status, response_json, created_at
+        FROM orders_sent WHERE deployment_id = ? ORDER BY created_at DESC
+        """,
+        (deployment_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def insert_fill(
+    conn: sqlite3.Connection,
+    *,
+    order_id: str,
+    t212_order_id: int | None,
+    filled_qty: float,
+    filled_price: float,
+    filled_at: str,
+    raw_json: str,
+) -> int:
+    """Persist a fill row. Returns the autoincrement id."""
+    cur = conn.execute(
+        """
+        INSERT INTO fills_received (
+            order_id, t212_order_id, filled_qty, filled_price, filled_at, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (order_id, t212_order_id, filled_qty, filled_price, filled_at, raw_json),
+    )
+    return int(cur.lastrowid or 0)
+
+
+def list_fills_for_order(conn: sqlite3.Connection, order_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT id, order_id, t212_order_id, filled_qty, filled_price, filled_at, raw_json
+        FROM fills_received WHERE order_id = ? ORDER BY filled_at
+        """,
+        (order_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# -------- end deployments --------
+
+
 def list_runs_with_metrics(
     conn: sqlite3.Connection,
     *,

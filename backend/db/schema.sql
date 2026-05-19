@@ -53,3 +53,64 @@ CREATE TABLE IF NOT EXISTS trades (
     FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_trades_run ON trades(run_id);
+
+-- Phase 11: Trading 212 deployment ---------------------------------------
+-- `deployments` is the configuration: which strategy on which T212 ticker,
+-- with what budget and schedule. `armed=1` is the gate the scheduler checks.
+CREATE TABLE IF NOT EXISTS deployments (
+    id                  TEXT PRIMARY KEY,
+    strategy_id         TEXT NOT NULL,
+    ticker              TEXT NOT NULL,            -- T212 instrument code, e.g. "AAPL_US_EQ"
+    timeframe           TEXT NOT NULL,
+    params_json         TEXT NOT NULL,
+    deployment_capital  REAL NOT NULL,            -- account-currency budget for sizing
+    cost_config_json    TEXT NOT NULL,
+    order_type          TEXT NOT NULL DEFAULT 'market',  -- 'market' | 'limit'
+    schedule_cron       TEXT NOT NULL,            -- 5-field crontab, e.g. "5 21 * * 1-5"
+    armed               INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    last_run_at         TEXT,                     -- ISO 8601; NULL until first run
+    FOREIGN KEY (strategy_id) REFERENCES strategies(id)
+);
+CREATE INDEX IF NOT EXISTS idx_deployments_strategy ON deployments(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_deployments_armed    ON deployments(armed);
+
+-- `orders_sent` is our local record of every order intent for a deployment.
+-- `request_id_hash` is the idempotency key (sha256 of deployment_id +
+-- as_of + side + qty + ticker, truncated to 16 hex chars). Duplicate
+-- insert raises sqlite3.IntegrityError — the order builder catches that
+-- and treats it as "already submitted; skip."
+CREATE TABLE IF NOT EXISTS orders_sent (
+    id                TEXT PRIMARY KEY,
+    deployment_id     TEXT NOT NULL,
+    request_id_hash   TEXT NOT NULL UNIQUE,
+    t212_order_id     INTEGER,                    -- NULL until T212 accepts
+    as_of_timestamp   TEXT NOT NULL,
+    ticker            TEXT NOT NULL,
+    side              TEXT NOT NULL,              -- 'BUY' | 'SELL'
+    qty               REAL NOT NULL,              -- absolute shares
+    order_type        TEXT NOT NULL,              -- 'market' | 'limit'
+    limit_price       REAL,                       -- NULL for market
+    status            TEXT NOT NULL DEFAULT 'PENDING',
+    response_json     TEXT,                       -- T212 response or error blob
+    created_at        TEXT NOT NULL,
+    FOREIGN KEY (deployment_id) REFERENCES deployments(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_orders_deployment ON orders_sent(deployment_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status     ON orders_sent(status);
+CREATE INDEX IF NOT EXISTS idx_orders_t212id     ON orders_sent(t212_order_id);
+
+-- `fills_received` is one row per partial / full fill. T212 typically
+-- emits one row per order but the schema allows N to keep the option
+-- open without a migration.
+CREATE TABLE IF NOT EXISTS fills_received (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id       TEXT NOT NULL,
+    t212_order_id  INTEGER,
+    filled_qty     REAL NOT NULL,
+    filled_price   REAL NOT NULL,
+    filled_at      TEXT NOT NULL,
+    raw_json       TEXT NOT NULL,
+    FOREIGN KEY (order_id) REFERENCES orders_sent(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_fills_order ON fills_received(order_id);
