@@ -519,32 +519,37 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 9 — event-driven backtest mode with protective stops. **260 tests passing, all green.**
+**Last completed:** Phase 10 — Trading 212 read-only Demo integration. **311 tests passing, all green.**
 
-State at the end of Phase 9:
-- `backend/engine/event_driven.py` — `StopConfig` + `run_event_driven`. Bar-by-bar engine; same `BacktestResult` shape as vectorized.
-- `Trade.exit_reason: str | None` added (None for vectorized; `stop_loss / take_profit / trailing_stop / signal` for event-driven).
-- `POST /backtest/event_driven` route; persists `params_json: {mode: 'event_driven', stop_config: {...}}`.
-- `backend/api/schemas.py` — `StopConfigModel`, `EventDrivenBacktestRequest`.
-- Frontend: stops toggle + 3 percent inputs in the Backtest right rail; `TradeList` shows "Why exit" column when any trade has it; library badge `stops` (purple) for event_driven runs.
-- `frontend/api.js` — `runEventDriven(payload)`.
-- Tests: `tests/test_event_driven.py` (10, including exact-price assertions on synthetic OHLCV with gap-down semantics) and `tests/test_api_event_driven.py` (3).
+State at the end of Phase 10:
+- `backend/t212/client.py` — httpx wrapper. Auth: `httpx.BasicAuth(T212_DEMO_KEY, T212_DEMO_SECRET)`. Methods: `get_account_cash`, `get_account_metadata`, `get_portfolio`, `get_orders`, `get_instruments`, `get_pies`. Error hierarchy: `T212AuthError` (401), `T212RateLimited` (429 with `retry_after` parsing), `T212UpstreamError` (5xx), `T212TransportError` (timeout/network), `T212Error` (other 4xx).
+- `backend/t212/instruments.py` — daily Parquet cache at `~/.backtester/t212/instruments.parquet` + sidecar `meta.json`. 24h refresh window. `find_by_ticker(query)` does case-insensitive exact match against both `shortName` (e.g. "AAPL") and the T212 code (e.g. "AAPL_US_EQ"). Returns a list — single human tickers can map to multiple venues.
+- `backend/config.py` — `Settings` gains `t212_demo_secret` (required) and `t212_live_secret` (allowed empty until Phase 13).
+- Routes in `backend/api/routes.py`: `GET /t212/account|positions|orders|instruments|pies`. Error mapping: `T212AuthError` / `T212RateLimited` / `T212UpstreamError` / generic → 502, `T212TransportError` → 504, missing-key defense-in-depth → 503.
+- **Phase 10.5 TTL cache** on the four polling routes (`_t212_cache` + `_t212_cached()` helper in `routes.py`). TTLs: account 10s, positions 15s, orders 15s, pies 60s. `/t212/instruments` bypasses this layer (it has its own 24h Parquet cache). Exceptions never poison the cache.
+- Frontend `LiveView` (top-level view alongside run / author / library). Header "Live" toggle button. Four tabs: Account (card grid), Positions / Orders (sortable tables), Pies (cards). Per-tab lazy-load + refresh; structured error messages including T212's `retry_after_seconds` when sent.
+- `frontend/api.js` — `getT212Account`, `getT212Positions`, `getT212Orders`, `getT212Pies`, `getT212Instruments({ refresh })`.
 
-Live Done When verified: SPY 2010-2024 long-and-hold + 5% trailing stop → **137 trailing-stop exits**, fill prices near peak × 0.95, CAGR 3.94% vs vectorized 12.89%.
+Live Done When verified in browser (2026-05-19): Live tab opens, Account shows £5,000 free / total on the fresh Demo, three other tabs show clean empty states. Six rapid `/t212/account` calls in 210ms now produce **1 upstream T212 hit** (was 6 before the cache, with intermittent 502s on every-other-click).
 
-**Bugs caught during Phase 9 (documented for future event-style work):**
-1. Float imprecision in stop-trigger comparisons (`100.0 * 1.10 != 110.0` exactly) was silently suppressing at-threshold triggers. Fixed with `_PRICE_EPS = 1e-9` on every comparison. If you ever add new order types here, follow the same pattern.
-2. An initial `continue` after a stop-fire over-suppressed the next-bar re-entry. Removed it — the stop bar's actual position is already 0, and the signal-change branch correctly arms the next bar.
+**Auth shape gotcha (phase setup cost real time — captured in the "Errors I won't make again" list):** the dated CLAUDE.md note describing "Basic with key:secret base64-encoded" was actually correct. T212 v0 does use Basic auth with `(api_key, secret)`. A bare-key probe 401s on every endpoint, looking indistinguishable from a revoked key. Always probe with both shapes before assuming the credentials are bad.
 
-**Next up:** **Phase 10 — Trading 212 read-only integration.**
+**Commits in Phase 10:**
+1. `4a6e650` Phase 10.1 — T212 client + Basic auth + error mapping (15 tests).
+2. `778a02b` Phase 10.2 — instruments Parquet cache with 24h refresh + find_by_ticker (16 tests).
+3. `657e97d` Phase 10.3 — /t212/* read-only routes with T212Error mapping (15 tests; live-smoke verified).
+4. `1f1ad48` Phase 10.4 — frontend LiveView with four tabs + per-tab lazy-load.
+5. `6be7d74` Phase 10.5 — TTL cache to absorb back-to-back clicks (5 tests; live-smoke: 6 calls in 210ms → 1 upstream hit).
 
-Suggested Phase 10 scope:
-1. `backend/t212/__init__.py` + `backend/t212/client.py` — httpx wrapper around the T212 v0 API. Auth model: T212 v0 uses a direct API-key header (`Authorization: <key>`, no Basic prefix). Demo base URL `https://demo.trading212.com/api/v0/`. The CLAUDE.md mention of "Basic with key:secret base64-encoded" is dated; verify with a live curl before committing the client.
-2. `backend/t212/instruments.py` — daily Parquet cache for the (large) instruments list, similar pattern to `data/prices.py`. Mapping helpers: `find_by_ticker(ticker)` to look up T212 instrument codes.
-3. Routes: `GET /t212/account`, `GET /t212/positions`, `GET /t212/orders`, `GET /t212/instruments`, `GET /t212/pies`. All hit Demo only; Live URL is NOT configurable from the frontend in this phase.
-4. Frontend "Live" view: new top-level view (alongside run / author / library). Tabs for Account / Positions / Orders / Pies. Shows the read-only state; no order entry until Phase 11.
-5. Safeguards: route returns 503 if `T212_DEMO_KEY` is empty in `.env`. Errors from T212 (401, 429, 5xx) surface as 502 with a clear message.
-6. Tests: mock `httpx.Client` to assert auth header construction, response parsing, and error mapping. No live calls in the suite.
+**Next up:** **Phase 11 — Trading 212 deployment (Demo only).**
+
+Suggested Phase 11 scope (matching the Phase 11 section of the roadmap above):
+1. New SQLite tables: `deployments`, `orders_sent`, `fills_received`. Migration in `backend/db/conn.py`.
+2. `backend/deploy/runner.py` — computes target-vs-actual position deltas from a strategy + the current `/t212/positions`. Output: list of orders to send.
+3. `backend/deploy/orders.py` — builds idempotent T212 orders. Request ID = stable hash of `(deployment_id, as_of_timestamp, side, qty)` so retries never double-send. Add `backend.t212.client.place_order(...)` calling `POST /equity/orders/limit`/`market`/etc.
+4. `backend/deploy/scheduler.py` — APScheduler is acceptable; simpler cron-in-process is fine too. Triggers `runner.run_once(deployment_id)` at end-of-bar.
+5. Live vs backtest tracking comparison route: `/deployments/{id}/tracking` returns expected vs actual equity curves so the Tracking tab can plot drift.
+6. Frontend: new "Deploy" view + "Tracking" view. Confirmation modal on first deployment ("This will place real orders in Demo. Confirm.").
 
 **Persistent strategy ID for smoke runs:** `896013b850a24a1b8fbc47bee509c671` (SPY SMA crossover; persisted from Phase 5.3).
 
@@ -554,6 +559,6 @@ Suggested Phase 10 scope:
 1. `cd ~/code/backtester`
 2. `claude` (or `claude resume` to continue a prior session)
 3. First prompt: "Read CLAUDE.md fully. Confirm by summarizing the current resume pointer and the next phase. Don't write any code yet — let's align before starting."
-4. After confirmation: "Let's do Phase 10."
+4. After confirmation: "Let's do Phase 11."
 
-The full repo state is reconstructable from git (`git log --oneline` on `main`); the cache lives at `~/.backtester/`; `.env` has the required keys. Total tests: **260 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
+The full repo state is reconstructable from git (`git log --oneline` on `main`); the price cache lives at `~/.backtester/prices/`; the T212 instruments cache at `~/.backtester/t212/`; `.env` has the required `T212_DEMO_KEY` + `T212_DEMO_SECRET`. Total tests: **311 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
