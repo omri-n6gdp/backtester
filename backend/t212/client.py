@@ -218,3 +218,104 @@ def get_pies() -> list[dict[str, Any]]:
     """GET /equity/pies → user's pies (auto-invest portfolios)."""
     result = _request("GET", "equity/pies")
     return result if result is not None else []
+
+
+# --- Order write endpoints (Phase 11) -------------------------------------
+#
+# Live-probed schemas as of 2026-05-19. See `place_limit_order` for the full
+# response shape; market/cancel/get mirror it with field deltas noted below.
+
+
+def place_limit_order(
+    ticker: str,
+    quantity: float,
+    limit_price: float,
+    time_validity: str = "DAY",
+) -> dict[str, Any]:
+    """POST /equity/orders/limit — place a limit order on the Demo account.
+
+    Args:
+        ticker: T212 instrument code, e.g. "AAPL_US_EQ".
+        quantity: shares; positive=BUY, negative=SELL. Fractional values
+            are accepted where the instrument permits (most US equities).
+        limit_price: trigger price in the instrument's currency.
+        time_validity: "DAY" (cancels at market close) or "GTC"
+            (Good Till Cancelled, max 90 days on T212).
+
+    Returns:
+        Order dict (15 fields confirmed live):
+            id (int), strategy ("QUANTITY"), type ("LIMIT"), ticker,
+            quantity, filledQuantity, limitPrice, status ("NEW" when
+            working, "FILLED" / "CANCELLED" terminal), currency, side
+            ("BUY"/"SELL"), timeInForce, extendedHours, initiatedFrom
+            ("API"), createdAt (ISO), instrument {ticker, name, isin,
+            currency}.
+
+    Raises:
+        T212Error: 400 when funds insufficient, market closed, quantity
+            below the instrument minimum, etc. T212's error body is
+            RFC-7807 problem details — `type`, `title`, `detail`,
+            `traceId` — surfaced verbatim in the exception message.
+    """
+    body = {
+        "ticker": ticker,
+        "quantity": quantity,
+        "limitPrice": limit_price,
+        "timeValidity": time_validity,
+    }
+    return _request("POST", "equity/orders/limit", json=body)
+
+
+def place_market_order(ticker: str, quantity: float) -> dict[str, Any]:
+    """POST /equity/orders/market — place a market order on Demo.
+
+    Market orders execute IMMEDIATELY at the prevailing price (subject to
+    T212's spread). Use this when the deployment's cost model already
+    budgets for slippage. For tighter alignment with the backtest's
+    "fill at next bar's close" semantics, prefer place_limit_order with
+    a limit price equal to the bar's close.
+
+    Args:
+        ticker: T212 instrument code.
+        quantity: positive=BUY, negative=SELL. T212 infers side from sign.
+
+    Returns:
+        Order dict (same shape as place_limit_order, but type="MARKET"
+        and no limitPrice key).
+    """
+    body = {
+        "ticker": ticker,
+        "quantity": quantity,
+    }
+    return _request("POST", "equity/orders/market", json=body)
+
+
+def cancel_order(order_id: int) -> None:
+    """DELETE /equity/orders/{id} — cancel a working order. Returns None
+    on success; T212 sends an empty 200 body.
+
+    Race window: T212 has a brief gap (~hundreds of ms, observed up to
+    a few seconds in probing) immediately after place during which
+    cancel can return 404 even though `get_order(id)` confirms the
+    order exists. Callers that place-then-cancel in rapid succession
+    should retry the cancel once after a small delay. Routine
+    deployment cancellation (in response to a strategy signal change
+    one bar later) doesn't hit this window.
+
+    Raises:
+        T212Error: 404 if the order id is unknown OR if hitting the
+            post-place race window. Disambiguate with `get_order(id)`.
+    """
+    _request("DELETE", f"equity/orders/{order_id}")
+    return None
+
+
+def get_order(order_id: int) -> dict[str, Any]:
+    """GET /equity/orders/{id} — fetch a single order's current state.
+
+    Useful for filled-quantity polling. The `/equity/orders` list
+    endpoint returns ONLY working orders; once filled or cancelled an
+    order vanishes from it, so this endpoint is the canonical way to
+    confirm completion / fill price.
+    """
+    return _request("GET", f"equity/orders/{order_id}")

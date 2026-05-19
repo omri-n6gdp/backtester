@@ -266,3 +266,174 @@ def test_success_with_non_json_body_raises_upstream(captured_requests):
     install(handler)
     with pytest.raises(t212.T212UpstreamError):
         t212.get_account_cash()
+
+
+# --- Order write endpoints (Phase 11.1) -----------------------------------
+
+
+_PLACE_LIMIT_RESPONSE = {
+    "id": 49150662798,
+    "strategy": "QUANTITY",
+    "type": "LIMIT",
+    "ticker": "AAPL_US_EQ",
+    "quantity": 1.0,
+    "filledQuantity": 0,
+    "limitPrice": 10.0,
+    "status": "NEW",
+    "currency": "GBP",
+    "extendedHours": False,
+    "initiatedFrom": "API",
+    "side": "BUY",
+    "timeInForce": "DAY",
+    "createdAt": "2026-05-19T15:04:14.847+03:00",
+    "instrument": {
+        "ticker": "AAPL_US_EQ",
+        "name": "Apple",
+        "isin": "US0378331005",
+        "currency": "USD",
+    },
+}
+
+
+def test_place_limit_order_sends_correct_body_and_returns_response(captured_requests):
+    captured, install = captured_requests
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST"
+        assert req.url.path == "/api/v0/equity/orders/limit"
+        body = json.loads(req.content)
+        assert body == {
+            "ticker": "AAPL_US_EQ",
+            "quantity": 1.0,
+            "limitPrice": 10.0,
+            "timeValidity": "DAY",
+        }
+        return httpx.Response(200, json=_PLACE_LIMIT_RESPONSE)
+
+    install(handler)
+    resp = t212.place_limit_order("AAPL_US_EQ", 1.0, 10.0)
+    assert resp == _PLACE_LIMIT_RESPONSE
+    assert resp["id"] == 49150662798
+    assert resp["status"] == "NEW"
+
+
+def test_place_limit_order_respects_time_validity_override(captured_requests):
+    captured, install = captured_requests
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        assert body["timeValidity"] == "GTC"
+        return httpx.Response(200, json=_PLACE_LIMIT_RESPONSE)
+
+    install(handler)
+    t212.place_limit_order("AAPL_US_EQ", 1.0, 10.0, time_validity="GTC")
+
+
+def test_place_limit_order_400_surfaces_t212_detail(captured_requests):
+    """T212 returns RFC-7807 problem details on errors. The detail/title
+    must reach the caller via the exception message."""
+    _, install = captured_requests
+    err_body = {
+        "type": "/api-errors/business/insufficient-funds",
+        "title": "Insufficient funds",
+        "status": 400,
+        "detail": "Not enough free cash to place this order",
+        "traceId": "abc123",
+    }
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json=err_body)
+
+    install(handler)
+    with pytest.raises(t212.T212Error) as exc_info:
+        t212.place_limit_order("AAPL_US_EQ", 1000.0, 200.0)
+    msg = str(exc_info.value)
+    assert "400" in msg
+    assert "Insufficient funds" in msg or "Not enough free cash" in msg
+
+
+def test_place_market_order_sends_correct_body(captured_requests):
+    captured, install = captured_requests
+    market_response = {**_PLACE_LIMIT_RESPONSE, "type": "MARKET"}
+    market_response.pop("limitPrice", None)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST"
+        assert req.url.path == "/api/v0/equity/orders/market"
+        body = json.loads(req.content)
+        # Market orders take only ticker + quantity — NO limitPrice, NO timeValidity.
+        assert body == {"ticker": "AAPL_US_EQ", "quantity": 1.0}
+        return httpx.Response(200, json=market_response)
+
+    install(handler)
+    resp = t212.place_market_order("AAPL_US_EQ", 1.0)
+    assert resp["type"] == "MARKET"
+
+
+def test_place_market_order_negative_quantity_means_sell(captured_requests):
+    """T212 infers side from quantity sign; the client passes it through verbatim."""
+    captured, install = captured_requests
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        assert body["quantity"] == -2.5
+        return httpx.Response(200, json={**_PLACE_LIMIT_RESPONSE, "side": "SELL"})
+
+    install(handler)
+    t212.place_market_order("AAPL_US_EQ", -2.5)
+
+
+def test_cancel_order_returns_none_on_empty_body(captured_requests):
+    """T212 sends an empty 200 body on successful cancel. Helper returns None."""
+    captured, install = captured_requests
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "DELETE"
+        assert req.url.path == "/api/v0/equity/orders/49150662798"
+        return httpx.Response(200)
+
+    install(handler)
+    assert t212.cancel_order(49150662798) is None
+
+
+def test_cancel_order_post_place_race_surfaces_as_t212error(captured_requests):
+    """The probe found that DELETE immediately after place can 404 with
+    "Order not found" even though the order exists. Confirm this surfaces
+    as a generic T212Error (not T212AuthError / T212RateLimited / etc.)
+    so callers that retry get an unambiguous signal to disambiguate via
+    get_order."""
+    _, install = captured_requests
+    err_body = {
+        "type": "/api-errors/entity-not-found",
+        "title": "Requested entity not found",
+        "status": 404,
+        "detail": "Order not found",
+        "traceId": "a6f2a86aceb337f9d082aff3001851ee",
+    }
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json=err_body)
+
+    install(handler)
+    with pytest.raises(t212.T212Error) as exc_info:
+        t212.cancel_order(49150662798)
+    # Should be the generic T212Error — not an auth/rate/upstream subclass.
+    assert not isinstance(exc_info.value, t212.T212AuthError)
+    assert not isinstance(exc_info.value, t212.T212RateLimited)
+    assert not isinstance(exc_info.value, t212.T212UpstreamError)
+    assert not isinstance(exc_info.value, t212.T212TransportError)
+    assert "404" in str(exc_info.value)
+
+
+def test_get_order_returns_single_order_dict(captured_requests):
+    captured, install = captured_requests
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "GET"
+        assert req.url.path == "/api/v0/equity/orders/49150662798"
+        return httpx.Response(200, json=_PLACE_LIMIT_RESPONSE)
+
+    install(handler)
+    resp = t212.get_order(49150662798)
+    assert resp == _PLACE_LIMIT_RESPONSE
+    assert resp["id"] == 49150662798
