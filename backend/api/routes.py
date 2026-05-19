@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -1096,6 +1097,50 @@ def run_event_driven_route(req: EventDrivenBacktestRequest) -> BacktestResponse:
 
 # -------- /t212/* read-only (Phase 10) --------
 
+# Tiny in-memory TTL cache for /t212/* routes (Phase 10.5).
+# T212's v0 API enforces aggressive per-endpoint rate limits (account/cash
+# 1/2s, portfolio/orders 1/5s, pies 1/30s). The browser's refresh button
+# plus lazy-load on tab activation can easily double-fire within those
+# windows. This cache absorbs back-to-back calls so we don't surface T212's
+# 429 as a 502 for every-other-click.
+#
+# Per-endpoint TTLs sit comfortably above T212's documented limits so a
+# genuine refresh always either serves cached data (fast) or fetches a
+# fresh value (no 429). Force-refresh isn't exposed in Phase 10 — the
+# Live view's refresh button trusts the cache. /t212/instruments has its
+# own 24h Parquet cache and bypasses this layer.
+_t212_cache: dict[str, tuple[float, Any]] = {}
+
+# Conservative; T212 doesn't publish rates and they may tighten. Easy to tune.
+T212_CACHE_TTL_SECONDS = {
+    "account": 10.0,
+    "positions": 15.0,
+    "orders": 15.0,
+    "pies": 60.0,
+}
+
+
+def _now() -> float:
+    """Indirection for tests; returns monotonic seconds."""
+    return time.monotonic()
+
+
+def _t212_cached(key: str, ttl: float, fn: Callable[..., Any], *args, **kwargs) -> Any:
+    """Serve `key` from cache if its entry is < ttl seconds old, else call
+    fn and store the result. Exceptions from fn are NEVER cached — a
+    failed refresh leaves the previous cache state in place (so the next
+    caller retries fn) and propagates the error to the route handler.
+    """
+    cached = _t212_cache.get(key)
+    if cached is not None:
+        ts, value = cached
+        if _now() - ts < ttl:
+            return value
+    value = fn(*args, **kwargs)
+    _t212_cache[key] = (_now(), value)
+    return value
+
+
 def _handle_t212_call(fn, *args, **kwargs):
     """Run a T212 client call and translate its exception hierarchy into
     the right HTTPException. Each route is one line: return _handle_t212_call(fn).
@@ -1135,21 +1180,31 @@ def t212_account_route() -> dict[str, Any]:
 
     Returns the raw T212 cash dict: {free, total, ppl, result, invested,
     pieCash, blocked}. No transformation — the frontend renders it
-    directly so new T212 fields surface automatically.
+    directly so new T212 fields surface automatically. Cached for 10s
+    to absorb rapid refresh clicks within T212's per-endpoint cooldown.
     """
-    return _handle_t212_call(t212_client.get_account_cash)
+    return _handle_t212_call(
+        _t212_cached, "account", T212_CACHE_TTL_SECONDS["account"],
+        t212_client.get_account_cash,
+    )
 
 
 @router.get("/t212/positions")
 def t212_positions_route() -> list[dict[str, Any]]:
-    """T212 Demo open positions. Empty list when nothing is held."""
-    return _handle_t212_call(t212_client.get_portfolio)
+    """T212 Demo open positions. Empty list when nothing is held. 15s cache."""
+    return _handle_t212_call(
+        _t212_cached, "positions", T212_CACHE_TTL_SECONDS["positions"],
+        t212_client.get_portfolio,
+    )
 
 
 @router.get("/t212/orders")
 def t212_orders_route() -> list[dict[str, Any]]:
-    """T212 Demo working (open) orders."""
-    return _handle_t212_call(t212_client.get_orders)
+    """T212 Demo working (open) orders. 15s cache."""
+    return _handle_t212_call(
+        _t212_cached, "orders", T212_CACHE_TTL_SECONDS["orders"],
+        t212_client.get_orders,
+    )
 
 
 @router.get("/t212/instruments")
@@ -1167,8 +1222,12 @@ def t212_instruments_route(
 
 @router.get("/t212/pies")
 def t212_pies_route() -> list[dict[str, Any]]:
-    """T212 Demo pies (auto-invest portfolios)."""
-    return _handle_t212_call(t212_client.get_pies)
+    """T212 Demo pies (auto-invest portfolios). 60s cache — T212's pies
+    endpoint has the strictest per-minute limit of any /equity/ route."""
+    return _handle_t212_call(
+        _t212_cached, "pies", T212_CACHE_TTL_SECONDS["pies"],
+        t212_client.get_pies,
+    )
 
 
 @router.get("/runs/{run_id}", response_model=BacktestResponse)

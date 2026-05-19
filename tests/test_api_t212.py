@@ -14,6 +14,17 @@ from backend.t212 import client as t212_client
 from backend.t212 import instruments as t212_instruments
 
 
+@pytest.fixture(autouse=True)
+def _clear_t212_cache():
+    """Phase 10.5 added a module-level TTL cache on /t212/* routes. Clear
+    it between tests so payloads/stubs from one test never leak into
+    another. Wiping after the test too keeps later non-T212 tests clean."""
+    from backend.api import routes as _rmod
+    _rmod._t212_cache.clear()
+    yield
+    _rmod._t212_cache.clear()
+
+
 CASH_PAYLOAD = {
     "free": 5000.0, "total": 5000.0, "ppl": 0.0,
     "result": 0.0, "invested": 0.0, "pieCash": 0.0, "blocked": 0.0,
@@ -183,6 +194,110 @@ def test_generic_t212_error_maps_to_502(api_client: TestClient, monkeypatch):
 
 
 # --- 503 defense-in-depth (settings empty) -------------------------------
+
+
+# --- Phase 10.5 cache behavior --------------------------------------------
+
+
+def test_cache_serves_second_call_from_memory(api_client: TestClient, monkeypatch):
+    """Two GETs within the TTL window must result in only one upstream call."""
+    calls = []
+
+    def stub():
+        calls.append(1)
+        return CASH_PAYLOAD
+
+    monkeypatch.setattr(t212_client, "get_account_cash", stub)
+
+    r1 = api_client.get("/t212/account")
+    r2 = api_client.get("/t212/account")
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert r1.json() == r2.json() == CASH_PAYLOAD
+    assert len(calls) == 1, "second call should have been served from cache"
+
+
+def test_cache_keys_are_per_endpoint(api_client: TestClient, monkeypatch):
+    """Caching one endpoint must not satisfy a different endpoint's call."""
+    cash_calls, port_calls = [], []
+    monkeypatch.setattr(
+        t212_client, "get_account_cash",
+        lambda: (cash_calls.append(1), CASH_PAYLOAD)[1],
+    )
+    monkeypatch.setattr(
+        t212_client, "get_portfolio",
+        lambda: (port_calls.append(1), POSITIONS_PAYLOAD)[1],
+    )
+    api_client.get("/t212/account")
+    api_client.get("/t212/positions")
+    assert len(cash_calls) == 1
+    assert len(port_calls) == 1
+
+
+def test_cache_expires_after_ttl(api_client: TestClient, monkeypatch):
+    """When the cache entry exceeds its TTL, the next call hits upstream."""
+    from backend.api import routes as _rmod
+
+    calls = []
+
+    def stub():
+        calls.append(1)
+        return CASH_PAYLOAD
+
+    monkeypatch.setattr(t212_client, "get_account_cash", stub)
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(_rmod, "_now", lambda: fake_now[0])
+
+    api_client.get("/t212/account")             # populates cache @ 1000
+    fake_now[0] = 1005.0
+    api_client.get("/t212/account")             # cache hit (5s elapsed, TTL 10s)
+    assert len(calls) == 1
+
+    fake_now[0] = 1011.0                        # advance past TTL
+    api_client.get("/t212/account")             # refetch
+    assert len(calls) == 2
+
+
+def test_exception_does_not_poison_cache(api_client: TestClient, monkeypatch):
+    """A failed upstream call must NOT cache the exception. The next
+    call should retry upstream and, on success, return the fresh value."""
+    state = {"first": True}
+
+    def stub():
+        if state["first"]:
+            state["first"] = False
+            raise t212_client.T212RateLimited("rate limited", retry_after=2.0)
+        return CASH_PAYLOAD
+
+    monkeypatch.setattr(t212_client, "get_account_cash", stub)
+
+    r1 = api_client.get("/t212/account")
+    assert r1.status_code == 502
+
+    r2 = api_client.get("/t212/account")
+    assert r2.status_code == 200
+    assert r2.json() == CASH_PAYLOAD
+
+
+def test_instruments_route_bypasses_ttl_cache(api_client: TestClient, monkeypatch):
+    """/t212/instruments has its own 24h Parquet cache (Phase 10.2). It
+    must NOT route through the in-memory TTL cache — that would double-
+    cache and complicate refresh semantics."""
+    calls = []
+
+    def stub(**kw):
+        calls.append(kw)
+        return INSTRUMENTS_PAYLOAD
+
+    monkeypatch.setattr(t212_instruments, "get_instruments", stub)
+
+    api_client.get("/t212/instruments")
+    api_client.get("/t212/instruments")
+    api_client.get("/t212/instruments?refresh=true")
+    # Two normal + one refresh: every call hits get_instruments, which
+    # decides itself whether to read the Parquet cache or refetch.
+    assert len(calls) == 3
+    assert calls[2] == {"force_refresh": True}
 
 
 def test_503_when_settings_credentials_empty(api_client: TestClient, monkeypatch):
