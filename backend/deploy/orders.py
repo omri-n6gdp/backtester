@@ -5,7 +5,7 @@ Takes OrderIntent objects from `runner.py` and turns each into a row in
 `orders_sent` plus (on success) a real T212 order. The idempotency
 primitive is the UNIQUE constraint on `orders_sent.request_id_hash`:
 
-  hash = sha256(deployment_id + as_of + ticker + side + qty + type + limit)[:16]
+  hash = sha256(deployment_id + as_of + ticker + side + order_type)[:16]
 
 A duplicate insert raises `sqlite3.IntegrityError`, which the submitter
 catches and treats as "already submitted; skip." The scheduler can
@@ -54,19 +54,22 @@ logger = logging.getLogger(__name__)
 def compute_request_id_hash(*, deployment_id: str, intent: OrderIntent) -> str:
     """Stable 16-char hex idempotency hash for an order intent.
 
-    All fields that characterize the order are included; if any change
-    (qty rounding, limit price, side flip), the hash is fresh. The
-    `as_of_timestamp` makes the hash bar-specific so retries within the
-    same bar collide but next-bar attempts go through.
+    The hash identifies "this deployment acted on this bar, this side":
+    `deployment_id + as_of_timestamp + ticker + side + order_type`. It
+    deliberately excludes `qty` and `limit_price` — both are derived from
+    the live price, which drifts intraday, so including them would let a
+    mid-day re-run of "Run now" slip a second order past the idempotency
+    check (Phase 12.1 fix). Keyed this way, a deployment places exactly
+    one order per (bar, ticker, side): a re-run within the same bar
+    always collides and is skipped, and the next bar's fresh `as_of`
+    goes through.
     """
     payload = "|".join([
         deployment_id,
         intent.as_of_timestamp,
         intent.ticker,
         intent.side,
-        f"{intent.qty:.6f}",
         intent.order_type,
-        f"{intent.limit_price:.6f}" if intent.limit_price is not None else "none",
     ])
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 

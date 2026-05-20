@@ -448,7 +448,7 @@ New SQLite tables: `deployments`, `orders_sent`, `fills_received`. `backend/depl
 
 The protective layer before any real-money trading (Phase 13). Combines the original core safeguards with the deployment-engine review findings (2026-05-20). Every safeguard fails closed.
 
-**12.1 — Idempotency fix.** [bug] The order idempotency hash includes the exact `qty` (and `limit_price`), which drift with the live price — so re-running "Run now" mid-day can place a second order. Re-key the hash on `deployment_id + as_of + ticker + side + order_type` only → exactly one order per (deployment, bar, side).
+**12.1 — ✅ Idempotency fix.** [bug] The order idempotency hash includes the exact `qty` (and `limit_price`), which drift with the live price — so re-running "Run now" mid-day can place a second order. Re-key the hash on `deployment_id + as_of + ticker + side + order_type` only → exactly one order per (deployment, bar, side).
 
 **12.2 — Missed-run catch-up.** A scheduled run is silently skipped if the laptop is asleep at the cron minute. On server startup, detect a missed run (the last scheduled fire is later than `last_run_at`) and run it.
 
@@ -560,7 +560,7 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 15.1 (backend) — the parameter sweep no longer crashes for non-SMA strategies (`run_sweep` skips an un-buildable heatmap instead of 500ing). **Phase 11 is COMPLETE (11.1–11.9)**; the 2026-05-20 deployment review and Omri's new direction are captured in the expanded Phase 12 and the new Phase 15. **425 backend tests passing, all green.**
+**Last completed:** Phase 12.1 — the order-idempotency fix. The idempotency hash is now keyed on `deployment_id + as_of + ticker + side + order_type` (no longer the price-derived `qty`/`limit_price`), so a deployment places exactly one order per (bar, ticker, side) — re-running "Run now" mid-day can no longer double-order. **Phase 11 is COMPLETE (11.1–11.9); Phase 15.1 backend done.** **426 backend tests passing, all green.**
 
 Phase 10 (read-only Demo integration) shipped earlier and remains green: `backend/t212/client.py` (httpx + `BasicAuth`, read methods + error hierarchy), `backend/t212/instruments.py` (24h Parquet cache + `find_by_ticker`), `GET /t212/*` routes with a TTL cache, and the frontend `LiveView`. See "Commits" / git log for detail.
 
@@ -574,7 +574,7 @@ State at the end of Phase 11.4:
 
 **Commits in Phase 11 so far:** `05cca03` 11.1 client writes (8 tests) · `8212a58` 11.2 schema + repo (14 tests) · `addc6ac` 11.3 runner (22 tests) · `bc11192` 11.4 idempotent submitter (18 tests) · `96efbc4` 11.5 scheduler (19 tests) · `a1bef8e` 11.6 routes (22 tests) · `b1648ee` 11.7 frontend · `87942c2` 11.9 currency-correct sizing (9 tests). 11.8 was a verification checkpoint (no code commit).
 
-**Next up:** **Phase 12 — Safeguards & deployment hardening.** Omri chose to continue the roadmap from Phase 12; the Phase 15 strategy-research work is re-sequenced to follow it. Eight sub-tasks **12.1–12.8** — see the Phase 12 block. Starting with **12.1 — the order-idempotency fix** (a real bug: re-running a deployment mid-day can place a second order, because the idempotency hash includes the price-dependent qty).
+**Next up:** **Phase 12 — Safeguards & deployment hardening.** Omri chose to continue the roadmap from Phase 12; the Phase 15 strategy-research work is re-sequenced to follow it. Eight sub-tasks **12.1–12.8** — see the Phase 12 block. **12.1 (order-idempotency fix) is done — next is 12.2, missed-run catch-up.**
 
 Remaining Phase 11 scope:
 - **11.5** ✅ `backend/deploy/scheduler.py` — APScheduler `BackgroundScheduler`, one cron job per armed deployment (job id `deployment:<id>`, in-memory jobstore, `register_all_armed()` rebuilds jobs from SQLite on boot). **Public API for 11.6 to wire routes to:** `run_deployment(id) -> DeploymentRunResult` (full pipeline, never raises; statuses OK / DISARMED / NOT_FOUND / NO_DATA / ERROR), `register_deployment(deployment_dict)`, `unregister_deployment(id)`, `register_all_armed()`, `start()`, `shutdown()`, `get_scheduler()`. `as_of` = last bar's timestamp, so re-firing the same trading day is idempotent. `armed` checked at registration AND fire time. Misfires are skipped, not run late. `resolve_price_ticker` bridges the T212 instrument code → yfinance symbol (the one place the two identifiers meet). Wired into `server.py` startup/shutdown hooks (kept out of `create_app()` so the test suite never spawns a thread). 19 tests.

@@ -103,10 +103,12 @@ def test_hash_differs_when_deployment_id_changes():
     assert a != b
 
 
-def test_hash_differs_when_qty_changes():
+def test_hash_stable_when_qty_changes():
+    """Phase 12.1: qty drifts with the live price, so it must NOT affect
+    the idempotency hash — otherwise a mid-day re-run double-orders."""
     a = compute_request_id_hash(deployment_id="dep-1", intent=_make_intent(qty=1.0))
     b = compute_request_id_hash(deployment_id="dep-1", intent=_make_intent(qty=2.0))
-    assert a != b
+    assert a == b
 
 
 def test_hash_differs_when_side_flips():
@@ -127,7 +129,9 @@ def test_hash_differs_when_as_of_changes():
     assert a != b
 
 
-def test_hash_differs_when_limit_price_changes():
+def test_hash_stable_when_limit_price_changes():
+    """Phase 12.1: limit_price (= the live close) is excluded from the
+    hash for the same reason as qty."""
     a = compute_request_id_hash(
         deployment_id="dep-1",
         intent=_make_intent(order_type="limit", limit_price=200.0),
@@ -136,7 +140,7 @@ def test_hash_differs_when_limit_price_changes():
         deployment_id="dep-1",
         intent=_make_intent(order_type="limit", limit_price=201.0),
     )
-    assert a != b
+    assert a == b
 
 
 # --- submit_intents happy paths -------------------------------------------
@@ -257,15 +261,17 @@ def test_submit_multiple_intents_all_recorded(fresh_db_with_deployment, monkeypa
     calls = []
 
     def fake_place_market(ticker, quantity):
-        calls.append(quantity)
+        calls.append((ticker, quantity))
         return {**_T212_RESPONSE, "id": 100 + len(calls)}
 
     monkeypatch.setattr(t212_client, "place_market_order", fake_place_market)
 
+    # A realistic multi-intent batch differs by ticker (one diff per
+    # ticker), so each intent has a distinct idempotency hash.
     intents = [
-        _make_intent(qty=1.0, as_of_timestamp="2026-05-19T21:00:00+00:00"),
-        _make_intent(qty=2.0, as_of_timestamp="2026-05-19T21:00:00+00:00"),
-        _make_intent(qty=3.0, as_of_timestamp="2026-05-19T21:00:00+00:00"),
+        _make_intent(ticker="AAPL_US_EQ", qty=1.0),
+        _make_intent(ticker="MSFT_US_EQ", qty=2.0),
+        _make_intent(ticker="GOOGL_US_EQ", qty=3.0),
     ]
     with connect() as conn:
         results = submit_intents(
@@ -273,7 +279,7 @@ def test_submit_multiple_intents_all_recorded(fresh_db_with_deployment, monkeypa
         )
     assert [r.status for r in results] == ["SUBMITTED"] * 3
     assert [r.t212_order_id for r in results] == [101, 102, 103]
-    assert calls == [1.0, 2.0, 3.0]
+    assert calls == [("AAPL_US_EQ", 1.0), ("MSFT_US_EQ", 2.0), ("GOOGL_US_EQ", 3.0)]
 
 
 # --- idempotency ----------------------------------------------------------
@@ -402,3 +408,31 @@ def test_empty_intent_list_returns_empty_results(fresh_db_with_deployment):
             conn, deployment_id=fresh_db_with_deployment, intents=[],
         )
     assert results == []
+
+
+def test_submit_skips_a_requantified_intent_for_the_same_bar(
+    fresh_db_with_deployment, monkeypatch,
+):
+    """Phase 12.1: a mid-day re-run recomputes a slightly different qty
+    off the drifting live price; that must NOT slip a second order — the
+    same (bar, ticker, side) is one order."""
+    calls = 0
+
+    def fake_place(ticker, quantity):
+        nonlocal calls
+        calls += 1
+        return _T212_RESPONSE
+
+    monkeypatch.setattr(t212_client, "place_market_order", fake_place)
+
+    first = _make_intent(qty=6.6, as_of_timestamp="2026-05-20T00:00:00+00:00")
+    requantified = _make_intent(qty=6.5, as_of_timestamp="2026-05-20T00:00:00+00:00")
+
+    with connect() as conn:
+        r1 = submit_intents(conn, deployment_id=fresh_db_with_deployment, intents=[first])
+    with connect() as conn:
+        r2 = submit_intents(conn, deployment_id=fresh_db_with_deployment, intents=[requantified])
+
+    assert r1[0].status == "SUBMITTED"
+    assert r2[0].status == "SKIPPED_DUPLICATE"
+    assert calls == 1, "the re-quantified same-bar intent must not place a 2nd order"
