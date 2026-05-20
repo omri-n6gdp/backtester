@@ -85,7 +85,13 @@ def api_client(tmp_path, monkeypatch):
     from backend.db.conn import migrate
     migrate()
     from backend.api import create_app
+    from backend.deploy import scheduler
 
+    # Each API test gets a clean scheduler singleton: the deployment
+    # routes mutate it (registering cron jobs), and it must not leak
+    # between tests.
+    scheduler._reset_scheduler()
     app = create_app()
     with TestClient(app) as client:
         yield client
+    scheduler._reset_scheduler()

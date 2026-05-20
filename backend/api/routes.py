@@ -21,6 +21,12 @@ from backend.api.schemas import (
     ComboResultModel,
     CostConfigModel,
     DeflatedSharpeResponseModel,
+    DeploymentArmRequest,
+    DeploymentCreateRequest,
+    DeploymentListResponse,
+    DeploymentModel,
+    DeploymentRunResponse,
+    DeploymentTrackingResponse,
     EventDrivenBacktestRequest,
     StopConfigModel,
     HeatmapRequestModel,
@@ -29,6 +35,7 @@ from backend.api.schemas import (
     MonteCarloConfigModel,
     MonteCarloResponseModel,
     OOSResponseModel,
+    OrderSentModel,
     ParamStabilityEntry,
     PricesResponse,
     RegimeAnalysisResponseModel,
@@ -40,6 +47,7 @@ from backend.api.schemas import (
     StrategyCreateResponse,
     StrategyDetail,
     StrategySummary,
+    SubmitResultModel,
     SweepRequest,
     SweepResponse,
     TranslateStrategyRequest,
@@ -54,6 +62,7 @@ from backend.api.schemas import (
 from backend.data.prices import get_prices
 from backend.db import repo
 from backend.db.conn import connect
+from backend.deploy import scheduler
 from backend.engine.costs import CostConfig, DEFAULT_COST_CONFIG
 from backend.engine.event_driven import StopConfig, run_event_driven
 from backend.engine.metrics import compute_metrics
@@ -1275,4 +1284,259 @@ def get_run_route(run_id: str) -> BacktestResponse:
         monte_carlo=None,
         deflated_sharpe=None,
         regimes=None,
+    )
+
+
+# -------- /deployments (Phase 11.6) --------
+
+# Creating or re-arming a deployment enables live order placement, so both
+# require this exact confirmation token. Disarming a deployment, and a
+# manual run of an already-armed one, do not.
+ARM_TOKEN = "ARM"
+
+
+def _deployment_to_model(row: dict[str, Any]) -> DeploymentModel:
+    """deployments row (sqlite) -> DeploymentModel (API)."""
+    return DeploymentModel(
+        id=row["id"],
+        strategy_id=row["strategy_id"],
+        ticker=row["ticker"],
+        timeframe=row["timeframe"],
+        params=json.loads(row["params_json"]) if row["params_json"] else {},
+        deployment_capital=row["deployment_capital"],
+        cost_config=json.loads(row["cost_config_json"]) if row["cost_config_json"] else {},
+        order_type=row["order_type"],
+        schedule_cron=row["schedule_cron"],
+        armed=bool(row["armed"]),
+        created_at=row["created_at"],
+        last_run_at=row["last_run_at"],
+    )
+
+
+def _order_to_model(row: dict[str, Any]) -> OrderSentModel:
+    """orders_sent row (sqlite) -> OrderSentModel (API)."""
+    return OrderSentModel(
+        id=row["id"],
+        deployment_id=row["deployment_id"],
+        request_id_hash=row["request_id_hash"],
+        t212_order_id=row["t212_order_id"],
+        as_of_timestamp=row["as_of_timestamp"],
+        ticker=row["ticker"],
+        side=row["side"],
+        qty=row["qty"],
+        order_type=row["order_type"],
+        limit_price=row["limit_price"],
+        status=row["status"],
+        response_json=row["response_json"],
+        created_at=row["created_at"],
+    )
+
+
+@router.post("/deployments", response_model=DeploymentModel)
+def create_deployment_route(req: DeploymentCreateRequest) -> DeploymentModel:
+    """Create a Trading 212 deployment.
+
+    Requires `confirmation_token == "ARM"`. The deployment is created
+    armed and its cron job is registered immediately — the token is the
+    "I understand this will place real orders" gate.
+    """
+    if req.confirmation_token != ARM_TOKEN:
+        raise HTTPException(
+            status_code=403,
+            detail='confirmation_token must be "ARM" to create a deployment',
+        )
+    if req.order_type not in ("market", "limit"):
+        raise HTTPException(status_code=400, detail="order_type must be 'market' or 'limit'")
+    if req.timeframe not in ("1d", "1h", "5m"):
+        raise HTTPException(status_code=400, detail="timeframe must be '1d', '1h', or '5m'")
+    try:
+        scheduler.validate_cron(req.schedule_cron)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid schedule_cron: {e!s}")
+
+    deployment_id = uuid.uuid4().hex
+    cost_config_json = json.dumps(
+        req.cost_config.model_dump() if req.cost_config is not None else {}
+    )
+    created_at = datetime.now(timezone.utc).isoformat()
+    with connect() as conn:
+        strat = repo.get_strategy(conn, req.strategy_id)
+        if strat is None or strat["active"] == 0:
+            raise HTTPException(status_code=404, detail="strategy not found")
+        repo.insert_deployment(
+            conn,
+            deployment_id=deployment_id,
+            strategy_id=req.strategy_id,
+            ticker=req.ticker,
+            timeframe=req.timeframe,
+            params_json=json.dumps(req.params),
+            deployment_capital=req.deployment_capital,
+            cost_config_json=cost_config_json,
+            order_type=req.order_type,
+            schedule_cron=req.schedule_cron,
+            armed=True,
+            created_at=created_at,
+        )
+        row = repo.get_deployment(conn, deployment_id)
+
+    # Created armed -> register its cron job now.
+    scheduler.register_deployment(row)
+    return _deployment_to_model(row)
+
+
+@router.get("/deployments", response_model=DeploymentListResponse)
+def list_deployments_route(
+    strategy_id: str | None = Query(None),
+    armed_only: bool = Query(False),
+) -> DeploymentListResponse:
+    """List deployments, newest first. Filters (strategy_id, armed_only) are AND-ed."""
+    with connect() as conn:
+        rows = repo.list_deployments(conn, strategy_id=strategy_id, armed_only=armed_only)
+    return DeploymentListResponse(deployments=[_deployment_to_model(r) for r in rows])
+
+
+@router.get("/deployments/{deployment_id}", response_model=DeploymentModel)
+def get_deployment_route(deployment_id: str) -> DeploymentModel:
+    with connect() as conn:
+        row = repo.get_deployment(conn, deployment_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="deployment not found")
+    return _deployment_to_model(row)
+
+
+@router.post("/deployments/{deployment_id}/arm", response_model=DeploymentModel)
+def arm_deployment_route(deployment_id: str, req: DeploymentArmRequest) -> DeploymentModel:
+    """Re-arm a paused deployment. Requires the ARM token — re-enabling
+    live order placement carries the same risk as creating one."""
+    if req.confirmation_token != ARM_TOKEN:
+        raise HTTPException(
+            status_code=403,
+            detail='confirmation_token must be "ARM" to arm a deployment',
+        )
+    with connect() as conn:
+        row = repo.get_deployment(conn, deployment_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="deployment not found")
+        repo.set_deployment_armed(conn, deployment_id, True)
+        row = repo.get_deployment(conn, deployment_id)
+    scheduler.register_deployment(row)
+    return _deployment_to_model(row)
+
+
+@router.post("/deployments/{deployment_id}/disarm", response_model=DeploymentModel)
+def disarm_deployment_route(deployment_id: str) -> DeploymentModel:
+    """Pause a deployment: clears `armed` and removes its cron job. No
+    token required — turning a deployment OFF is always safe and should be
+    frictionless."""
+    with connect() as conn:
+        row = repo.get_deployment(conn, deployment_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="deployment not found")
+        repo.set_deployment_armed(conn, deployment_id, False)
+        row = repo.get_deployment(conn, deployment_id)
+    scheduler.unregister_deployment(deployment_id)
+    return _deployment_to_model(row)
+
+
+@router.post("/deployments/{deployment_id}/run", response_model=DeploymentRunResponse)
+def run_deployment_route(deployment_id: str) -> DeploymentRunResponse:
+    """Manually trigger one run of a deployment, now.
+
+    Returns 200 with the outcome in `status` (OK / DISARMED / NO_DATA /
+    ERROR): a disarmed or erroring run is a valid, reported outcome, not
+    an HTTP error. 404 only when the deployment id is unknown.
+    """
+    with connect() as conn:
+        row = repo.get_deployment(conn, deployment_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="deployment not found")
+
+    result = scheduler.run_deployment(deployment_id)
+    return DeploymentRunResponse(
+        deployment_id=result.deployment_id,
+        status=result.status,
+        ran_at=result.ran_at,
+        as_of_timestamp=result.as_of_timestamp,
+        intent_count=result.intent_count,
+        submitted=sum(1 for r in result.submit_results if r.status == "SUBMITTED"),
+        results=[
+            SubmitResultModel(
+                ticker=r.intent.ticker,
+                side=r.intent.side,
+                qty=r.intent.qty,
+                order_type=r.intent.order_type,
+                status=r.status,
+                t212_order_id=r.t212_order_id,
+                error=r.error,
+            )
+            for r in result.submit_results
+        ],
+        error=result.error,
+    )
+
+
+@router.get("/deployments/{deployment_id}/tracking", response_model=DeploymentTrackingResponse)
+def deployment_tracking_route(deployment_id: str) -> DeploymentTrackingResponse:
+    """Expected-vs-actual for a deployment.
+
+    `orders` is every order the deployment has recorded. `expected_*` is a
+    backtest of the deployment's strategy over the same price window the
+    scheduler fetches — best-effort: if it cannot be produced the curves
+    come back empty and `expected_error` says why, but the deployment and
+    its orders are always returned. 404 only when the deployment is unknown.
+    """
+    with connect() as conn:
+        row = repo.get_deployment(conn, deployment_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="deployment not found")
+        order_rows = repo.list_orders_for_deployment(conn, deployment_id)
+        strat = repo.get_strategy(conn, row["strategy_id"])
+
+    expected_timestamps: list[str] = []
+    expected_equity: list[float | None] = []
+    expected_positions: list[float | None] = []
+    expected_metrics: dict[str, Any] = {}
+    expected_error: str | None = None
+    try:
+        if strat is None or strat["active"] == 0:
+            raise RuntimeError("strategy not found or inactive")
+        code_path = Path(strat["code_path"])
+        if not code_path.exists():
+            raise RuntimeError("strategy code file missing on disk")
+        fn = load_validated_strategy(code_path.read_text(encoding="utf-8"))
+
+        yf_ticker = scheduler.resolve_price_ticker(row["ticker"])
+        end = datetime.now(timezone.utc).date()
+        start = end - timedelta(days=scheduler.lookback_days(row["timeframe"]))
+        data = get_prices(yf_ticker, row["timeframe"], start, end)
+        if data is None or data.empty:
+            raise RuntimeError("no price data for the deployment window")
+
+        cost_json = json.loads(row["cost_config_json"]) if row["cost_config_json"] else {}
+        cost_config = _cost_config_from_model(
+            CostConfigModel(**cost_json) if cost_json else None
+        )
+        result = run_backtest(
+            fn,
+            data,
+            json.loads(row["params_json"]) if row["params_json"] else {},
+            cost_config=cost_config,
+            starting_capital=row["deployment_capital"],
+            bars_per_year=252,
+        )
+        expected_timestamps = _index_to_iso(result.equity.index)
+        expected_equity = _series_to_list(result.equity)
+        expected_positions = _series_to_list(result.positions)
+        expected_metrics = _metrics_to_dict(compute_metrics(result))
+    except Exception as e:  # noqa: BLE001 — the expected curve is best-effort
+        expected_error = f"{type(e).__name__}: {e!s}"
+
+    return DeploymentTrackingResponse(
+        deployment=_deployment_to_model(row),
+        orders=[_order_to_model(r) for r in order_rows],
+        expected_timestamps=expected_timestamps,
+        expected_equity=expected_equity,
+        expected_positions=expected_positions,
+        expected_metrics=expected_metrics,
+        expected_error=expected_error,
     )

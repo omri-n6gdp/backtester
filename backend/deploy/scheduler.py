@@ -158,8 +158,17 @@ def resolve_price_ticker(t212_ticker: str) -> str:
     return t212_ticker
 
 
-def _lookback_days(timeframe: str) -> int:
+def lookback_days(timeframe: str) -> int:
+    """Calendar-day price-history window for a timeframe (see _LOOKBACK_DAYS).
+    Used by the scheduler to fetch data and by the tracking route to
+    backtest over the same window."""
     return _LOOKBACK_DAYS.get(timeframe, _DEFAULT_LOOKBACK_DAYS)
+
+
+def validate_cron(schedule_cron: str) -> None:
+    """Raise ValueError if `schedule_cron` is not a valid 5-field crontab.
+    Lets POST /deployments reject a bad schedule before the row is written."""
+    CronTrigger.from_crontab(schedule_cron, timezone=SCHEDULER_TIMEZONE)
 
 
 def _now_iso() -> str:
@@ -215,7 +224,7 @@ def run_deployment(deployment_id: str) -> DeploymentRunResult:
 
         price_ticker = resolve_price_ticker(deployment["ticker"])
         end = datetime.now(timezone.utc).date()
-        start = end - timedelta(days=_lookback_days(deployment["timeframe"]))
+        start = end - timedelta(days=lookback_days(deployment["timeframe"]))
         data = get_prices(price_ticker, deployment["timeframe"], start, end)
 
         if data is None or data.empty:

@@ -387,3 +387,110 @@ class BacktestResponse(BaseModel):
     monte_carlo: MonteCarloResponseModel | None = None
     deflated_sharpe: DeflatedSharpeResponseModel | None = None
     regimes: RegimeAnalysisResponseModel | None = None
+
+
+# ---------- /deployments (Phase 11.6) ----------
+class DeploymentCreateRequest(BaseModel):
+    """Create a Trading 212 deployment.
+
+    `confirmation_token` must be the literal "ARM". A deployment is
+    created armed and starts running on its cron schedule immediately, so
+    the token is the "I understand this will place real orders" gate.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    strategy_id: str = Field(min_length=1)
+    ticker: str = Field(min_length=1)               # T212 instrument code, e.g. "AAPL_US_EQ"
+    timeframe: str = "1d"
+    params: dict[str, Any] = Field(default_factory=dict)
+    deployment_capital: float = Field(gt=0)
+    cost_config: CostConfigModel | None = None
+    order_type: str = "market"                      # "market" | "limit"
+    schedule_cron: str = Field(min_length=1)        # 5-field crontab, interpreted in UTC
+    confirmation_token: str = Field(min_length=1)
+
+
+class DeploymentArmRequest(BaseModel):
+    """Body for POST /deployments/{id}/arm. Re-enabling live order
+    placement requires the ARM token, exactly as creation does."""
+    model_config = ConfigDict(extra="forbid")
+
+    confirmation_token: str = Field(min_length=1)
+
+
+class DeploymentModel(BaseModel):
+    """A deployment row as returned by the API."""
+    id: str
+    strategy_id: str
+    ticker: str
+    timeframe: str
+    params: dict[str, Any]
+    deployment_capital: float
+    cost_config: dict[str, Any]
+    order_type: str
+    schedule_cron: str
+    armed: bool
+    created_at: str
+    last_run_at: str | None = None
+
+
+class DeploymentListResponse(BaseModel):
+    deployments: list[DeploymentModel]
+
+
+class OrderSentModel(BaseModel):
+    """One row from orders_sent — an order the deployment recorded."""
+    id: str
+    deployment_id: str
+    request_id_hash: str
+    t212_order_id: int | None = None
+    as_of_timestamp: str
+    ticker: str
+    side: str
+    qty: float
+    order_type: str
+    limit_price: float | None = None
+    status: str
+    response_json: str | None = None
+    created_at: str
+
+
+class SubmitResultModel(BaseModel):
+    """Per-intent outcome of one deployment run."""
+    ticker: str
+    side: str
+    qty: float
+    order_type: str
+    status: str                 # SUBMITTED | SKIPPED_DUPLICATE | FAILED
+    t212_order_id: int | None = None
+    error: str | None = None
+
+
+class DeploymentRunResponse(BaseModel):
+    """Result of POST /deployments/{id}/run (manual trigger)."""
+    deployment_id: str
+    status: str                 # OK | DISARMED | NO_DATA | ERROR
+    ran_at: str
+    as_of_timestamp: str | None = None
+    intent_count: int
+    submitted: int
+    results: list[SubmitResultModel]
+    error: str | None = None
+
+
+class DeploymentTrackingResponse(BaseModel):
+    """Expected (backtest) vs actual (orders sent) for a deployment.
+
+    `expected_*` is a backtest of the deployment's strategy over the same
+    price window the scheduler uses. If that backtest cannot be produced
+    (data fetch failed, stored code invalid, ...), the curves come back
+    empty and `expected_error` explains why — the deployment and its
+    orders are always returned.
+    """
+    deployment: DeploymentModel
+    orders: list[OrderSentModel]
+    expected_timestamps: list[str]
+    expected_equity: list[float | None]
+    expected_positions: list[float | None]
+    expected_metrics: dict[str, Any]
+    expected_error: str | None = None

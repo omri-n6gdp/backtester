@@ -382,3 +382,22 @@ def test_start_runs_scheduler_and_registers_armed(fresh_db):
     assert sched.running
     assert sched.get_job("deployment:dep-armed") is not None
     # The _fresh_scheduler fixture shuts the thread down in teardown.
+
+
+# --- validate_cron + lookback_days ---------------------------------------
+
+
+def test_validate_cron_accepts_a_valid_crontab():
+    scheduler.validate_cron("5 21 * * 1-5")  # must not raise
+
+
+def test_validate_cron_rejects_garbage():
+    with pytest.raises(ValueError):
+        scheduler.validate_cron("not a valid cron")
+
+
+def test_lookback_days_per_timeframe():
+    assert scheduler.lookback_days("1d") == 800
+    assert scheduler.lookback_days("1h") == 60
+    assert scheduler.lookback_days("5m") == 30
+    assert scheduler.lookback_days("weird") == 800  # default fallback
