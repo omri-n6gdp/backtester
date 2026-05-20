@@ -444,9 +444,23 @@ New SQLite tables: `deployments`, `orders_sent`, `fills_received`. `backend/depl
 
 ---
 
-### Phase 12 — Safeguards
+### Phase 12 — Safeguards & deployment hardening
 
-Kill switch (flatten all). Per-deployment max position. Daily loss circuit breaker. Confirmation modals ("I understand"). Each safeguard fails closed.
+**Core safeguards.** Kill switch (flatten all positions). Per-deployment max position size. Daily-loss circuit breaker. Confirmation modals ("I understand"). Each safeguard fails closed.
+
+**Deployment-engine review findings (2026-05-20).** Gaps found reviewing the Phase 11 engine — fix alongside the safeguards, before going live (Phase 13):
+- **Missed-run catch-up** — a scheduled run is silently skipped if the laptop is asleep at the cron minute. On server startup, detect and run a missed run. (The biggest practical weakness of the scheduler as built.)
+- **Fill reconciliation** — orders are marked SUBMITTED when T212 *accepts* them and never updated; the `fills_received` table is unused. Poll T212 for status / fill price, update `orders_sent`, show real fills in Tracking.
+- **Idempotency vs. intraday price** — the idempotency hash includes the exact qty, which drifts with the live price, so re-running "Run now" mid-day can place a second order. Pin `as_of` / the key to the last *completed* bar.
+- **Disarm should cancel working orders** — "Pause" stops future runs but leaves an already-placed, unfilled T212 order live.
+- **One deployment per ticker** — two deployments on the same ticker fight (each assumes it owns the whole position). Block / warn at creation.
+- **Delete / edit a deployment** — currently a deployment can only be paused; a wrong ticker/capital is permanent.
+- **Tighten CORS** — `allow_origins=["*"]` is wide for routes that place real orders; restrict before Phase 13.
+- **Tracking polish** — rebase the expected curve to the deployment's live period; add account-value snapshots for a true actual-equity line; a per-run history (today only `last_run_at` exists).
+- **Notifications** — tell the user when a deployment trades or errors.
+- **Smaller** — schedule presets ("after US close") instead of raw cron; a "preview" (what would this deployment do now, without ordering); account-cash precheck; strategy-active check in the runner.
+
+**Done When:** kill switch flattens all positions; max-position + daily-loss breaker enforced and fail closed; a missed run is caught up on restart; Tracking shows real fills.
 
 ---
 
@@ -459,6 +473,28 @@ Generate `T212_LIVE_KEY`. Per-deployment "live activation token" flow. Smoke tes
 ### Phase 14 — Polish
 
 Structured logging to `~/.backtester/logs/`. Error toast UI. Cache compaction maintenance script. Time Machine backups. README + STRATEGIES.md + DEPLOYMENT.md. Replace deprecated `@app.on_event("startup")` with modern `lifespan`.
+
+---
+
+### Phase 15 — Strategy research workflow (re-prioritised AHEAD of Phase 12 — decided with Omri, 2026-05-20)
+
+Phase 11 (the deployment engine) is built. Omri's focus now shifts to the **author → backtest → optimise → library** loop, so he can build and evaluate a large library of strategies. This phase runs before Phase 12.
+
+**15.1 — BUG: the parameter sweep crashes for any non-SMA strategy.** Diagnosed 2026-05-20: `build_heatmap` (`backend/engine/robustness/heatmaps.py`) raises `KeyError` when a requested heatmap axis isn't a param of the swept strategy. The frontend hardcodes the heatmap axes to SMA's `short`/`long`; sweeping another strategy with a matching param grid → KeyError → `run_sweep`'s heatmap loop has no try/except → the `/backtest/sweep` route 500s. Fix: (a) `run_sweep` skips an un-buildable heatmap instead of failing the whole sweep; (b) the frontend defaults the heatmap axes to the actual param-grid keys.
+
+**15.2 — BUG: the library shows duplicate runs.** Every backtest persists a fresh `runs` row, so re-running the same (strategy, ticker, dates, params) config piles up identical-looking library rows. Plus a double-submit gap — a fast double-click fires `/backtest` twice (~20ms-apart pairs are visible in the DB). Fix: dedupe the library by config (latest run per config) and/or upsert on persist; harden the Run button against double-submit.
+
+**15.3 — Buy & hold baseline on every equity chart.** Deferred since Phase 4. Every equity chart (backtest, optimise, tracking, library) overlays a buy-&-hold curve of the same asset over the same period — the honest "did it beat doing nothing" benchmark.
+
+**15.4 — Favourite strategies.** Star a strategy; favourites pin to the top of the sidebar and library. Supports the big-curated-library goal.
+
+**15.5 — "Optimise" flow.** Replace the separate "Sweep mode" with: run a normal backtest, then click **Optimise** — it runs the parameter sweep and shows the improved equity curve alongside the original baseline.
+
+**15.6 — "Optimise" = the full robustness picture.** Optimise runs not just the parameter sweep but also the regime check AND re-tests the best params across multiple assets — an overall view of the best way to run that strategy.
+
+**Goal:** a large, trustworthy library of strategies Omri can backtest, compare, optimise, and favourite.
+
+**Done When:** from a new strategy — backtest it (with buy & hold shown), Optimise it (sweep + regimes + multi-asset), favourite it, and see it in a duplicate-free library.
 
 ---
 
@@ -534,7 +570,7 @@ State at the end of Phase 11.4:
 
 **Commits in Phase 11 so far:** `05cca03` 11.1 client writes (8 tests) · `8212a58` 11.2 schema + repo (14 tests) · `addc6ac` 11.3 runner (22 tests) · `bc11192` 11.4 idempotent submitter (18 tests) · `96efbc4` 11.5 scheduler (19 tests) · `a1bef8e` 11.6 routes (22 tests) · `b1648ee` 11.7 frontend · `87942c2` 11.9 currency-correct sizing (9 tests). 11.8 was a verification checkpoint (no code commit).
 
-**Next up:** **Phase 12 — Safeguards** (kill switch / flatten-all, per-deployment max position, daily-loss circuit breaker, "I understand" confirmation modals — each fails closed).
+**Next up:** **Phase 15 — Strategy research workflow** (re-prioritised ahead of Phase 12, decided with Omri 2026-05-20). Starts with two bug fixes — **15.1** sweep crashes for non-SMA strategies, **15.2** library shows duplicate runs — then buy & hold baselines, favourite strategies, and the "Optimise" flow. Phase 12 (safeguards & deployment hardening) follows.
 
 Remaining Phase 11 scope:
 - **11.5** ✅ `backend/deploy/scheduler.py` — APScheduler `BackgroundScheduler`, one cron job per armed deployment (job id `deployment:<id>`, in-memory jobstore, `register_all_armed()` rebuilds jobs from SQLite on boot). **Public API for 11.6 to wire routes to:** `run_deployment(id) -> DeploymentRunResult` (full pipeline, never raises; statuses OK / DISARMED / NOT_FOUND / NO_DATA / ERROR), `register_deployment(deployment_dict)`, `unregister_deployment(id)`, `register_all_armed()`, `start()`, `shutdown()`, `get_scheduler()`. `as_of` = last bar's timestamp, so re-firing the same trading day is idempotent. `armed` checked at registration AND fire time. Misfires are skipped, not run late. `resolve_price_ticker` bridges the T212 instrument code → yfinance symbol (the one place the two identifiers meet). Wired into `server.py` startup/shutdown hooks (kept out of `create_app()` so the test suite never spawns a thread). 19 tests.
@@ -554,6 +590,6 @@ Remaining Phase 11 scope:
 1. `cd ~/code/backtester`
 2. `claude` (or `claude resume` to continue a prior session)
 3. First prompt: "Read CLAUDE.md fully. Confirm by summarizing the current resume pointer and the next phase. Don't write any code yet — let's align before starting."
-4. After confirmation: "Let's start Phase 12 — Safeguards."
+4. After confirmation: "Let's continue Phase 15 — strategy research workflow."
 
 The full repo state is reconstructable from git (`git log --oneline` on `main`); the price cache lives at `~/.backtester/prices/`; the T212 instruments cache at `~/.backtester/t212/`; `.env` has the required `T212_DEMO_KEY` + `T212_DEMO_SECRET`. Total tests: **423 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
