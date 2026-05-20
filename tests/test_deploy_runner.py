@@ -350,3 +350,53 @@ def test_compute_intents_empty_data_raises():
             portfolio=[],
             as_of_timestamp="2026-05-19T21:00:00+00:00",
         )
+
+
+# --- price_fx_factor (Phase 11.9 — currency-correct sizing) ---------------
+
+
+def test_position_to_qty_applies_fx_factor():
+    # capital is account-currency; price is instrument-currency. A 0.5
+    # factor halves the effective price, so twice the shares.
+    qty = position_to_qty(
+        target_position=1.0, deployment_capital=2000.0,
+        current_price=200.0, price_fx_factor=0.5,
+    )
+    assert qty == 20.0  # 2000 / (200 * 0.5)
+
+
+def test_position_to_qty_factor_one_matches_no_factor():
+    base = position_to_qty(
+        target_position=1.0, deployment_capital=5000.0, current_price=200.0,
+    )
+    with_factor = position_to_qty(
+        target_position=1.0, deployment_capital=5000.0,
+        current_price=200.0, price_fx_factor=1.0,
+    )
+    assert base == with_factor == 25.0
+
+
+def test_position_to_qty_rejects_non_positive_fx_factor():
+    with pytest.raises(ValueError):
+        position_to_qty(
+            target_position=1.0, deployment_capital=1000.0,
+            current_price=100.0, price_fx_factor=0.0,
+        )
+
+
+def test_compute_intents_applies_fx_factor():
+    data = make_synthetic_ohlcv(n=300).copy()
+    data.loc[data.index[-1], "close"] = 200.0
+    # 0.5 signal * 5000 capital = 2500 target value; effective price
+    # 200 * 0.5 = 100 -> 25 shares (vs 12.5 with no conversion).
+    intents = compute_intents(
+        deployment=_deployment(),
+        strategy_code=_LONG_HALF_STRATEGY,
+        data=data,
+        portfolio=[],
+        as_of_timestamp="2026-05-19T21:00:00+00:00",
+        price_fx_factor=0.5,
+    )
+    assert len(intents) == 1
+    assert intents[0].side == "BUY"
+    assert intents[0].qty == 25.0

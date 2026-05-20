@@ -140,6 +140,7 @@ def test_run_deployment_happy_path_submits_order(fresh_db, monkeypatch):
     fake_prices = _recording_prices(df)
     monkeypatch.setattr(scheduler, "get_prices", fake_prices)
     monkeypatch.setattr(scheduler, "resolve_price_ticker", lambda t: "AAPL")
+    monkeypatch.setattr(scheduler, "account_fx_factor", lambda t: 1.0)
     monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
 
     placed = []
@@ -181,6 +182,7 @@ def test_run_deployment_is_idempotent_for_same_bar(fresh_db, monkeypatch):
     df.loc[df.index[-1], "close"] = 200.0
     monkeypatch.setattr(scheduler, "get_prices", _recording_prices(df))
     monkeypatch.setattr(scheduler, "resolve_price_ticker", lambda t: "AAPL")
+    monkeypatch.setattr(scheduler, "account_fx_factor", lambda t: 1.0)
     # Portfolio stays empty across both fires — isolates the hash mechanism
     # from the "portfolio already caught up" path.
     monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
@@ -209,6 +211,7 @@ def test_run_deployment_flat_signal_places_no_orders(fresh_db, monkeypatch):
     monkeypatch.setattr(scheduler, "get_prices",
                         _recording_prices(make_synthetic_ohlcv(n=300)))
     monkeypatch.setattr(scheduler, "resolve_price_ticker", lambda t: "AAPL")
+    monkeypatch.setattr(scheduler, "account_fx_factor", lambda t: 1.0)
     monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
 
     placed = []
@@ -401,3 +404,72 @@ def test_lookback_days_per_timeframe():
     assert scheduler.lookback_days("1h") == 60
     assert scheduler.lookback_days("5m") == 30
     assert scheduler.lookback_days("weird") == 800  # default fallback
+
+
+# --- account_fx_factor (Phase 11.9 — currency-correct sizing) -------------
+
+
+def test_account_fx_factor_same_currency_is_one(monkeypatch):
+    monkeypatch.setattr(t212_client, "get_account_metadata",
+                        lambda: {"currencyCode": "USD"})
+    monkeypatch.setattr(instruments, "find_by_ticker",
+                        lambda t: [{"ticker": t, "currencyCode": "USD"}])
+    fx_prices = _recording_prices(pd.DataFrame({"close": [0.8]}))
+    monkeypatch.setattr(scheduler, "get_prices", fx_prices)
+
+    assert scheduler.account_fx_factor("AAPL_US_EQ") == 1.0
+    assert fx_prices.calls == [], "no FX fetch when currencies already match"
+
+
+def test_account_fx_factor_different_currency_fetches_rate(monkeypatch):
+    monkeypatch.setattr(t212_client, "get_account_metadata",
+                        lambda: {"currencyCode": "GBP"})
+    monkeypatch.setattr(instruments, "find_by_ticker",
+                        lambda t: [{"ticker": t, "currencyCode": "USD"}])
+    fx_prices = _recording_prices(pd.DataFrame({"close": [0.81, 0.79, 0.8]}))
+    monkeypatch.setattr(scheduler, "get_prices", fx_prices)
+
+    assert scheduler.account_fx_factor("AAPL_US_EQ") == 0.8
+    # fetched the instrument->account pair; the latest close is the rate.
+    assert fx_prices.calls[0][0] == "USDGBP=X"
+
+
+def test_account_fx_factor_instrument_not_found_raises(monkeypatch):
+    monkeypatch.setattr(t212_client, "get_account_metadata",
+                        lambda: {"currencyCode": "GBP"})
+    monkeypatch.setattr(instruments, "find_by_ticker", lambda t: [])
+    with pytest.raises(RuntimeError):
+        scheduler.account_fx_factor("WAT_XX_EQ")
+
+
+def test_account_fx_factor_missing_fx_data_raises(monkeypatch):
+    monkeypatch.setattr(t212_client, "get_account_metadata",
+                        lambda: {"currencyCode": "GBP"})
+    monkeypatch.setattr(instruments, "find_by_ticker",
+                        lambda t: [{"ticker": t, "currencyCode": "USD"}])
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    monkeypatch.setattr(scheduler, "get_prices", lambda *a, **k: empty)
+    with pytest.raises(RuntimeError):
+        scheduler.account_fx_factor("AAPL_US_EQ")
+
+
+def test_run_deployment_applies_fx_factor(fresh_db, monkeypatch):
+    """The FX factor flows through run_deployment into sizing: a 0.5
+    factor doubles the share count."""
+    dep_id = _seed_deployment(fresh_db, armed=True)
+    df = make_synthetic_ohlcv(n=300).copy()
+    df.loc[df.index[-1], "close"] = 200.0
+    monkeypatch.setattr(scheduler, "get_prices", _recording_prices(df))
+    monkeypatch.setattr(scheduler, "resolve_price_ticker", lambda t: "AAPL")
+    monkeypatch.setattr(scheduler, "account_fx_factor", lambda t: 0.5)
+    monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+
+    placed = []
+    monkeypatch.setattr(t212_client, "place_market_order",
+                        lambda tk, q: placed.append((tk, q)) or _T212_RESPONSE)
+
+    result = scheduler.run_deployment(dep_id)
+
+    assert result.status == "OK"
+    # 0.5 signal * 5000 capital = 2500; effective price 200*0.5=100 -> 25
+    assert placed == [("AAPL_US_EQ", 25.0)]

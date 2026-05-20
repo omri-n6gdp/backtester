@@ -158,6 +158,57 @@ def resolve_price_ticker(t212_ticker: str) -> str:
     return t212_ticker
 
 
+def account_fx_factor(t212_ticker: str) -> float:
+    """Multiplier that converts a price quoted in the instrument's
+    currency into the T212 account's currency.
+
+    A deployment's `deployment_capital` is in the account currency (e.g.
+    GBP), but an instrument's price comes from yfinance in the
+    instrument's own currency (e.g. USD for a US stock). Order sizing
+    must divide like-for-like, so the price is multiplied by this factor
+    first.
+
+    Returns 1.0 when the instrument already trades in the account
+    currency. Otherwise fetches the FX rate (account-currency units per
+    1 unit of the instrument currency).
+
+    Raises RuntimeError when the currencies differ but the rate cannot be
+    determined — `run_deployment` turns that into an ERROR result rather
+    than placing a mis-sized order. (T212 / data-layer errors propagate
+    as themselves and are caught the same way.)
+    """
+    meta = t212_client.get_account_metadata()
+    account_ccy = meta.get("currencyCode") or meta.get("currency")
+    if not account_ccy:
+        raise RuntimeError(f"could not read account currency from {meta!r}")
+
+    matches = instruments.find_by_ticker(t212_ticker)
+    if not matches:
+        raise RuntimeError(
+            f"instrument {t212_ticker!r} not found; cannot determine its currency"
+        )
+    instrument_ccy = matches[0].get("currencyCode")
+    if not instrument_ccy:
+        raise RuntimeError(f"instrument {t212_ticker!r} has no currencyCode")
+
+    if instrument_ccy == account_ccy:
+        return 1.0
+
+    # yfinance FX pair: "USDGBP=X" close is GBP per 1 USD — exactly the
+    # factor wanted (account-currency units per 1 instrument-currency unit).
+    pair = f"{instrument_ccy}{account_ccy}=X"
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=14)
+    fx = get_prices(pair, "1d", start, end)
+    if fx is None or fx.empty:
+        raise RuntimeError(f"no FX data for {pair}")
+    rate = float(fx["close"].iloc[-1])
+    if rate <= 0:
+        raise RuntimeError(f"invalid FX rate for {pair}: {rate}")
+    logger.info("FX %s: 1 %s = %.6f %s", pair, instrument_ccy, rate, account_ccy)
+    return rate
+
+
 def lookback_days(timeframe: str) -> int:
     """Calendar-day price-history window for a timeframe (see _LOOKBACK_DAYS).
     Used by the scheduler to fetch data and by the tracking route to
@@ -238,12 +289,14 @@ def run_deployment(deployment_id: str) -> DeploymentRunResult:
             # re-firing the job for the same trading day idempotent.
             as_of = data.index[-1].isoformat()
             portfolio = t212_client.get_portfolio()
+            fx_factor = account_fx_factor(deployment["ticker"])
             intents = compute_intents(
                 deployment=deployment,
                 strategy_code=strategy_code,
                 data=data,
                 portfolio=portfolio,
                 as_of_timestamp=as_of,
+                price_fx_factor=fx_factor,
             )
             if intents:
                 with connect() as conn:

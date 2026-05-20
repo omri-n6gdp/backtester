@@ -78,14 +78,24 @@ def position_to_qty(
     target_position: float,
     deployment_capital: float,
     current_price: float,
+    price_fx_factor: float = 1.0,
 ) -> float:
     """Convert a fractional position in [-1, +1] to an absolute share
     quantity. Truncates to 4 decimal places.
 
     Args:
         target_position: strategy signal in [-1, +1].
-        deployment_capital: account-currency budget assigned to the deployment.
-        current_price: latest close of the deployment's ticker.
+        deployment_capital: budget assigned to the deployment, in the
+            T212 account's currency.
+        current_price: latest close of the deployment's ticker, in the
+            instrument's own currency (yfinance quotes a US stock in USD).
+        price_fx_factor: multiplier that converts `current_price` from the
+            instrument's currency into the account currency. 1.0 when the
+            instrument already trades in the account currency; otherwise
+            the FX rate (account-currency units per 1 instrument-currency
+            unit). The scheduler computes it — see
+            `scheduler.account_fx_factor`. Without it, a GBP account
+            buying a USD stock is mis-sized by the FX rate.
 
     Returns: signed share count (negative = short). The deployment layer
         does not currently support shorting equities on T212; the caller
@@ -93,8 +103,13 @@ def position_to_qty(
     """
     if current_price <= 0:
         raise ValueError(f"current_price must be > 0, got {current_price}")
+    if price_fx_factor <= 0:
+        raise ValueError(f"price_fx_factor must be > 0, got {price_fx_factor}")
+    # current_price is in the instrument's currency; convert it to the
+    # account currency so it divides like-for-like into the capital.
+    price_in_account_ccy = current_price * price_fx_factor
     target_value = target_position * deployment_capital
-    return round(target_value / current_price, 4)
+    return round(target_value / price_in_account_ccy, 4)
 
 
 def diff_to_intent(
@@ -161,6 +176,7 @@ def compute_intents(
     data: pd.DataFrame,
     portfolio: list[dict[str, Any]],
     as_of_timestamp: str,
+    price_fx_factor: float = 1.0,
 ) -> list[OrderIntent]:
     """End-to-end runner: produce the order intents needed to move the
     live portfolio to the strategy's target as of the latest bar in
@@ -175,6 +191,8 @@ def compute_intents(
         portfolio: current T212 positions (output of `t212_client.get_portfolio`).
         as_of_timestamp: ISO 8601 string identifying the bar (used as
             input to the idempotency hash; must be stable across retries).
+        price_fx_factor: instrument-currency -> account-currency
+            multiplier for sizing (see `scheduler.account_fx_factor`).
 
     Returns:
         List of OrderIntents. Empty when the strategy says "stay put" or
@@ -194,6 +212,7 @@ def compute_intents(
         target_position=target_position,
         deployment_capital=float(deployment["deployment_capital"]),
         current_price=current_price,
+        price_fx_factor=price_fx_factor,
     )
     current_qty = _current_qty_for_ticker(portfolio, deployment["ticker"])
 

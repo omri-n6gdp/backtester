@@ -158,6 +158,7 @@ def test_run_deployment_places_order(api_client, monkeypatch):
     monkeypatch.setattr("backend.deploy.scheduler.get_prices", lambda *a, **k: df)
     monkeypatch.setattr("backend.deploy.scheduler.resolve_price_ticker", lambda t: "AAPL")
     monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+    monkeypatch.setattr("backend.deploy.scheduler.account_fx_factor", lambda t: 1.0)
 
     placed = []
 
@@ -221,6 +222,7 @@ def test_tracking_includes_orders_after_a_run(api_client, monkeypatch):
     monkeypatch.setattr("backend.api.routes.get_prices", lambda *a, **k: df)
     monkeypatch.setattr("backend.deploy.scheduler.resolve_price_ticker", lambda t: "AAPL")
     monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+    monkeypatch.setattr("backend.deploy.scheduler.account_fx_factor", lambda t: 1.0)
     monkeypatch.setattr(t212_client, "place_market_order", lambda tk, q: {"id": 7})
 
     api_client.post(f"/deployments/{dep['id']}/run")
