@@ -134,3 +134,56 @@ export async function getT212Instruments({ refresh = false } = {}) {
   const res = await fetch(url);
   return jsonOrThrow(res);
 }
+
+// ---- Deployments (Phase 11) --------------------------------------------
+
+export async function listDeployments(filters = {}) {
+  const qs = new URLSearchParams();
+  if (filters.strategy_id) qs.set('strategy_id', filters.strategy_id);
+  if (filters.armed_only) qs.set('armed_only', 'true');
+  const url = qs.toString() ? `${API_BASE}/deployments?${qs}` : `${API_BASE}/deployments`;
+  const res = await fetch(url);
+  return jsonOrThrow(res);
+}
+
+export async function getDeployment(id) {
+  const res = await fetch(`${API_BASE}/deployments/${encodeURIComponent(id)}`);
+  return jsonOrThrow(res);
+}
+
+export async function createDeployment(payload) {
+  const res = await fetch(`${API_BASE}/deployments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function armDeployment(id, confirmationToken) {
+  const res = await fetch(`${API_BASE}/deployments/${encodeURIComponent(id)}/arm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmation_token: confirmationToken }),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function disarmDeployment(id) {
+  const res = await fetch(`${API_BASE}/deployments/${encodeURIComponent(id)}/disarm`, {
+    method: 'POST',
+  });
+  return jsonOrThrow(res);
+}
+
+export async function runDeployment(id) {
+  const res = await fetch(`${API_BASE}/deployments/${encodeURIComponent(id)}/run`, {
+    method: 'POST',
+  });
+  return jsonOrThrow(res);
+}
+
+export async function getDeploymentTracking(id) {
+  const res = await fetch(`${API_BASE}/deployments/${encodeURIComponent(id)}/tracking`);
+  return jsonOrThrow(res);
+}

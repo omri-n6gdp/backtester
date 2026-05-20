@@ -17,6 +17,8 @@ import {
   validateStrategy, translateStrategy, createStrategy,
   getLibrary, getRun,
   getT212Account, getT212Positions, getT212Orders, getT212Pies,
+  listDeployments, createDeployment, armDeployment, disarmDeployment,
+  runDeployment, getDeploymentTracking,
 } from './api.js';
 
 const html = htm.bind(React.createElement);
@@ -1965,6 +1967,554 @@ function LiveView({ onClose }) {
 }
 
 
+// ---- Deploy + Tracking (Phase 11) ----------------------------------
+
+// Modal: enables a live-order action only after the user types ARM.
+// Mounted only while active, so each open starts with an empty field.
+function ArmModal({ title, body, busy, error, onConfirm, onCancel }) {
+  const [token, setToken] = useState('');
+  const inputRef = useRef(null);
+  useEffect(() => { inputRef.current && inputRef.current.focus(); }, []);
+  const armed = token.trim() === 'ARM';
+  return html`
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+         onClick=${() => { if (!busy) onCancel(); }}>
+      <div class="bg-ink-850 border border-ink-600 rounded-lg w-[460px] max-w-full p-6"
+           onClick=${e => e.stopPropagation()}>
+        <div class="text-mute-100 font-semibold text-lg">${title}</div>
+        <div class="text-sm text-mute-300 mt-2 leading-relaxed">${body}</div>
+        <input ref=${inputRef} class="${inputCls()} mt-4 tracking-[0.3em]"
+          placeholder="Type ARM" value=${token}
+          onChange=${e => setToken(e.target.value)}
+          onKeyDown=${e => { if (e.key === 'Enter' && armed && !busy) onConfirm(); }} />
+        ${error && html`<div class="mt-3 text-sm text-danger-500">${error}</div>`}
+        <div class="flex justify-end gap-2 mt-5">
+          <button onClick=${onCancel} disabled=${busy}
+            class="text-sm px-3 py-1.5 rounded bg-ink-800 hover:bg-ink-700 text-mute-200
+                   disabled:opacity-50 transition">Cancel</button>
+          <button onClick=${() => onConfirm()} disabled=${!armed || busy}
+            class="text-sm px-4 py-1.5 rounded font-medium transition
+                   ${armed && !busy
+                     ? 'bg-danger-500 hover:bg-danger-500/80 text-white'
+                     : 'bg-ink-700 text-mute-400 cursor-not-allowed'}">
+            ${busy ? 'Working…' : 'Confirm'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function DeployCreateForm({ strategies, busy, onCreate }) {
+  const [form, setForm] = useState({
+    strategy_id: strategies[0] ? strategies[0].id : '',
+    ticker: '',
+    timeframe: '1d',
+    deployment_capital: '1000',
+    order_type: 'market',
+    schedule_cron: '5 21 * * 1-5',
+    paramsJson: '{}',
+  });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  let parsedParams = {};
+  let paramsOk = true;
+  try {
+    const p = JSON.parse(form.paramsJson || '{}');
+    if (p && typeof p === 'object' && !Array.isArray(p)) parsedParams = p;
+    else paramsOk = false;
+  } catch (e) {
+    paramsOk = false;
+  }
+
+  const capital = Number(form.deployment_capital);
+  const valid =
+    !!form.strategy_id && form.ticker.trim() !== '' && form.schedule_cron.trim() !== ''
+    && Number.isFinite(capital) && capital > 0 && paramsOk;
+
+  function submit() {
+    if (!valid) return;
+    onCreate({
+      strategy_id: form.strategy_id,
+      ticker: form.ticker.trim(),
+      timeframe: form.timeframe,
+      params: parsedParams,
+      deployment_capital: capital,
+      order_type: form.order_type,
+      schedule_cron: form.schedule_cron.trim(),
+    });
+  }
+
+  if (strategies.length === 0) {
+    return html`
+      <div class="bg-ink-900 border border-ink-700 rounded p-4">
+        <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">New deployment</div>
+        <div class="text-sm text-mute-400">
+          Create a strategy first — a deployment runs one of your saved strategies.
+        </div>
+      </div>
+    `;
+  }
+
+  return html`
+    <div class="bg-ink-900 border border-ink-700 rounded p-4">
+      <div class="text-xs uppercase tracking-wider text-mute-400 mb-3">New deployment</div>
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <${Field} label="Strategy">
+          <select class=${inputCls()} value=${form.strategy_id}
+            onChange=${e => set('strategy_id', e.target.value)}>
+            ${strategies.map(s => html`<option key=${s.id} value=${s.id}>${s.name}</option>`)}
+          </select>
+        </${Field}>
+        <${Field} label="T212 ticker">
+          <input class=${inputCls()} placeholder="AAPL_US_EQ" value=${form.ticker}
+            onChange=${e => set('ticker', e.target.value)} />
+        </${Field}>
+        <${Field} label="Timeframe">
+          <select class=${inputCls()} value=${form.timeframe}
+            onChange=${e => set('timeframe', e.target.value)}>
+            <option value="1d">1d</option>
+            <option value="1h">1h</option>
+            <option value="5m">5m</option>
+          </select>
+        </${Field}>
+        <${Field} label="Capital (account currency)">
+          <input class=${inputCls()} type="number" min="1" value=${form.deployment_capital}
+            onChange=${e => set('deployment_capital', e.target.value)} />
+        </${Field}>
+        <${Field} label="Order type">
+          <select class=${inputCls()} value=${form.order_type}
+            onChange=${e => set('order_type', e.target.value)}>
+            <option value="market">market</option>
+            <option value="limit">limit</option>
+          </select>
+        </${Field}>
+        <${Field} label="Schedule (cron · UTC)">
+          <input class=${inputCls()} placeholder="5 21 * * 1-5" value=${form.schedule_cron}
+            onChange=${e => set('schedule_cron', e.target.value)} />
+        </${Field}>
+      </div>
+      <div class="mt-3">
+        <${Field} label="Strategy params (JSON)">
+          <input class="${inputCls()} ${paramsOk ? '' : 'border-danger-500'}"
+            placeholder=${'{"short": 50, "long": 200}'} value=${form.paramsJson}
+            onChange=${e => set('paramsJson', e.target.value)} />
+        </${Field}>
+        ${!paramsOk && html`<div class="text-xs text-danger-500 mt-1">Params must be a JSON object.</div>`}
+      </div>
+      <div class="flex items-center justify-between mt-3 gap-3">
+        <div class="text-xs text-mute-400">
+          Ticker is the T212 instrument code (e.g. <span class="num">AAPL_US_EQ</span>).
+          Cron is 5 fields in UTC — <span class="num">5 21 * * 1-5</span> is 21:05 on weekdays.
+        </div>
+        <button onClick=${submit} disabled=${!valid || busy}
+          class="text-sm px-4 py-1.5 rounded font-medium whitespace-nowrap transition
+                 ${valid && !busy
+                   ? 'bg-accent-600 hover:bg-accent-500 text-white'
+                   : 'bg-ink-800 text-mute-400 cursor-not-allowed'}">
+          Create deployment
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function RunResultBanner({ result, onDismiss }) {
+  const status = result.status;
+  const box =
+    status === 'OK'    ? 'bg-accent-500/10 border-accent-500/30 text-accent-400' :
+    status === 'ERROR' ? 'bg-danger-500/10 border-danger-500/30 text-danger-500' :
+                         'bg-ink-800 border-ink-600 text-mute-200';
+  let msg;
+  if (status === 'OK') {
+    msg = `Run complete — ${result.intent_count} order intent(s), ${result.submitted} submitted.`;
+  } else if (status === 'DISARMED') {
+    msg = 'Deployment is paused — arm it before it can place orders.';
+  } else if (status === 'NO_DATA') {
+    msg = 'No price data was available for this run — nothing was placed.';
+  } else if (status === 'ERROR') {
+    msg = `Run failed: ${result.error || 'unknown error'}`;
+  } else {
+    msg = `Run status: ${status}`;
+  }
+  return html`
+    <div class="flex items-start gap-3 border rounded px-3 py-2 text-sm ${box}">
+      <div class="flex-1">${msg}</div>
+      <button onClick=${onDismiss} class="text-mute-400 hover:text-mute-100 transition">✕</button>
+    </div>
+  `;
+}
+
+function DeploymentList({ deployments, loading, error, strategies, busy,
+                          onArm, onDisarm, onRun, onTrack, onReload }) {
+  const nameOf = (id) => {
+    const s = strategies.find(x => x.id === id);
+    return s ? s.name : id.slice(0, 8);
+  };
+  return html`
+    <div class="bg-ink-900 border border-ink-700 rounded">
+      <div class="flex items-center justify-between px-4 py-2.5 border-b border-ink-700">
+        <div class="text-xs uppercase tracking-wider text-mute-400">
+          Deployments${deployments ? html` <span class="num">· ${deployments.length}</span>` : ''}
+        </div>
+        <button onClick=${onReload} disabled=${loading}
+          class="text-xs px-3 py-1 rounded bg-ink-800 hover:bg-ink-700 text-mute-200
+                 disabled:opacity-50 transition">
+          ${loading ? 'refreshing…' : '↻ refresh'}
+        </button>
+      </div>
+      ${error
+        ? html`<div class="px-4 py-8 text-center text-danger-500 text-sm">${error}</div>`
+        : deployments === null
+          ? html`<div class="px-4 py-8 text-center text-mute-400 text-sm">Loading deployments…</div>`
+          : deployments.length === 0
+            ? html`<div class="px-4 py-8 text-center text-mute-400 text-sm">No deployments yet. Create one above.</div>`
+            : html`
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-sm">
+            <thead>
+              <tr class="border-b border-ink-700 text-mute-400 text-xs">
+                <th class="py-2 px-3 text-left font-medium">Strategy</th>
+                <th class="py-2 px-3 text-left font-medium">Ticker</th>
+                <th class="py-2 px-3 text-right font-medium">Capital</th>
+                <th class="py-2 px-3 text-left font-medium">Schedule</th>
+                <th class="py-2 px-3 text-left font-medium">Status</th>
+                <th class="py-2 px-3 text-left font-medium">Last run</th>
+                <th class="py-2 px-3 text-right font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${deployments.map(d => html`
+                <tr key=${d.id} class="border-b border-ink-800 hover:bg-ink-900/60">
+                  <td class="py-2 px-3 text-mute-100">${nameOf(d.strategy_id)}</td>
+                  <td class="py-2 px-3 num text-mute-200">
+                    ${d.ticker} <span class="text-mute-400 text-xs">${d.timeframe}</span>
+                  </td>
+                  <td class="py-2 px-3 text-right num text-mute-200">${fmtAcctNum(d.deployment_capital, 0)}</td>
+                  <td class="py-2 px-3 num text-mute-300 text-xs">${d.schedule_cron}</td>
+                  <td class="py-2 px-3">
+                    ${d.armed
+                      ? html`<span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-accent-500/20 text-accent-400 font-medium">Armed</span>`
+                      : html`<span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-ink-700 text-mute-400 font-medium">Paused</span>`}
+                  </td>
+                  <td class="py-2 px-3 num text-mute-400 text-xs">
+                    ${d.last_run_at ? fmtT212Date(d.last_run_at) : 'never'}
+                  </td>
+                  <td class="py-2 px-3">
+                    <div class="flex items-center justify-end gap-1.5">
+                      ${d.armed
+                        ? html`<button onClick=${() => onDisarm(d)} disabled=${busy}
+                            class="text-xs px-2 py-1 rounded bg-ink-800 hover:bg-ink-700 text-mute-200
+                                   disabled:opacity-50 transition">Pause</button>`
+                        : html`<button onClick=${() => onArm(d)} disabled=${busy}
+                            class="text-xs px-2 py-1 rounded bg-danger-500/80 hover:bg-danger-500 text-white
+                                   disabled:opacity-50 transition">Arm</button>`}
+                      <button onClick=${() => onRun(d)} disabled=${busy}
+                        class="text-xs px-2 py-1 rounded bg-ink-800 hover:bg-ink-700 text-mute-200
+                               disabled:opacity-50 transition">Run now</button>
+                      <button onClick=${() => onTrack(d.id)} disabled=${busy}
+                        class="text-xs px-2 py-1 rounded bg-ink-800 hover:bg-ink-700 text-mute-200
+                               disabled:opacity-50 transition">Tracking</button>
+                    </div>
+                  </td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function DeploymentTrackingPanel({ deploymentId, strategies, onBack }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await getDeploymentTracking(deploymentId));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { load(); }, [deploymentId]);
+
+  const dep = data && data.deployment;
+  const stratName = dep
+    ? ((strategies.find(s => s.id === dep.strategy_id) || {}).name || dep.strategy_id.slice(0, 8))
+    : '';
+  const m = (data && data.expected_metrics) || {};
+
+  return html`
+    <div class="p-6 space-y-5">
+      <div class="flex items-baseline justify-between">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400">Deployment · Tracking</div>
+          <div class="text-lg text-mute-100 font-medium mt-0.5">
+            ${dep ? `${stratName} · ${dep.ticker}` : 'Tracking'}
+          </div>
+        </div>
+        <button onClick=${onBack}
+          class="text-sm text-mute-300 hover:text-mute-100 transition px-2 py-1">
+          ← Back to deployments
+        </button>
+      </div>
+
+      ${loading
+        ? html`<div class="py-12 text-center text-mute-400 text-sm">Loading tracking…</div>`
+        : error
+          ? html`<${LiveError} message=${error} onRetry=${load} />`
+          : html`
+        <div class="bg-ink-900 border border-ink-700 rounded p-4 flex flex-wrap gap-x-8 gap-y-3">
+          ${[
+            ['Status', dep.armed ? 'Armed' : 'Paused'],
+            ['Ticker', dep.ticker],
+            ['Timeframe', dep.timeframe],
+            ['Capital', fmtAcctNum(dep.deployment_capital, 0)],
+            ['Order type', dep.order_type],
+            ['Schedule', dep.schedule_cron],
+            ['Last run', dep.last_run_at ? fmtT212Date(dep.last_run_at) : 'never'],
+          ].map(([k, v]) => html`
+            <div key=${k}>
+              <div class="text-[10px] uppercase tracking-wider text-mute-400">${k}</div>
+              <div class="text-sm num text-mute-100 mt-0.5">${v}</div>
+            </div>
+          `)}
+        </div>
+
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">
+            Expected equity curve
+            <span class="normal-case text-mute-400">— a backtest of this strategy over the data window</span>
+          </div>
+          ${data.expected_error
+            ? html`<div class="bg-ink-900 border border-ink-700 rounded px-4 py-8 text-center text-mute-400 text-sm">
+                Expected curve unavailable — ${data.expected_error}
+              </div>`
+            : data.expected_timestamps.length === 0
+              ? html`<div class="bg-ink-900 border border-ink-700 rounded px-4 py-8 text-center text-mute-400 text-sm">
+                  No expected curve to show.
+                </div>`
+              : html`
+                <div class="h-[300px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
+                  <${EquityChart} timestamps=${data.expected_timestamps} equity=${data.expected_equity} />
+                </div>
+                <div class="grid grid-cols-3 gap-3 mt-3">
+                  <${MetricCard} label="Expected CAGR" value=${fmtPct(m.cagr)}
+                    tone=${m.cagr > 0 ? 'good' : m.cagr < 0 ? 'bad' : null} />
+                  <${MetricCard} label="Expected Sharpe" value=${fmtNum(m.sharpe, 2)} />
+                  <${MetricCard} label="Expected max drawdown" value=${fmtPct(m.max_drawdown)} tone="bad" />
+                </div>
+              `}
+        </div>
+
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">
+            Orders placed <span class="num">· ${data.orders.length}</span>
+            <span class="normal-case text-mute-400">— what this deployment actually sent</span>
+          </div>
+          ${data.orders.length === 0
+            ? html`<div class="bg-ink-900 border border-ink-700 rounded px-4 py-8 text-center text-mute-400 text-sm">
+                No orders placed yet. Orders appear here once the deployment runs.
+              </div>`
+            : html`
+            <div class="bg-ink-900 border border-ink-700 rounded overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead>
+                  <tr class="border-b border-ink-700 text-mute-400 text-xs">
+                    <th class="py-2 px-3 text-left font-medium">As of</th>
+                    <th class="py-2 px-3 text-left font-medium">Side</th>
+                    <th class="py-2 px-3 text-right font-medium">Quantity</th>
+                    <th class="py-2 px-3 text-left font-medium">Type</th>
+                    <th class="py-2 px-3 text-left font-medium">Status</th>
+                    <th class="py-2 px-3 text-right font-medium">T212 order</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${data.orders.map(o => {
+                    const sideTone = o.side === 'BUY' ? 'text-accent-400' : 'text-danger-500';
+                    const statusTone = o.status === 'SUBMITTED' ? 'text-accent-400'
+                      : o.status === 'FAILED' ? 'text-danger-500' : 'text-mute-300';
+                    return html`
+                      <tr key=${o.id} class="border-b border-ink-800">
+                        <td class="py-2 px-3 num text-mute-300 text-xs">${fmtT212Date(o.as_of_timestamp)}</td>
+                        <td class="py-2 px-3 font-medium ${sideTone}">${o.side}</td>
+                        <td class="py-2 px-3 text-right num text-mute-200">${fmtAcctNum(o.qty, 4)}</td>
+                        <td class="py-2 px-3 text-mute-300 text-xs uppercase">${o.order_type}</td>
+                        <td class="py-2 px-3 text-xs uppercase ${statusTone}">${o.status}</td>
+                        <td class="py-2 px-3 text-right num text-mute-400 text-xs">${o.t212_order_id || '—'}</td>
+                      </tr>
+                    `;
+                  })}
+                </tbody>
+              </table>
+            </div>
+          `}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function DeployView({ strategies, onClose }) {
+  const [deployments, setDeployments] = useState(null);
+  const [listError, setListError] = useState(null);
+  const [listLoading, setListLoading] = useState(false);
+  const [armModal, setArmModal] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState(null);
+  const [runResult, setRunResult] = useState(null);
+  const [trackingId, setTrackingId] = useState(null);
+  const [formKey, setFormKey] = useState(0);
+
+  async function loadDeployments() {
+    setListLoading(true);
+    setListError(null);
+    try {
+      const res = await listDeployments();
+      setDeployments(res.deployments);
+    } catch (err) {
+      setListError(err.message);
+      setDeployments([]);
+    } finally {
+      setListLoading(false);
+    }
+  }
+  useEffect(() => { loadDeployments(); }, []);
+
+  function requestCreate(payload) {
+    setActionError(null);
+    setArmModal({
+      title: 'Arm new deployment',
+      body: html`<span>This places real orders into your Trading 212 <span class="text-accent-400 font-medium">Demo</span> account on the schedule you set. Type <span class="num text-mute-100">ARM</span> to confirm.</span>`,
+      onConfirm: async () => {
+        setBusy(true);
+        setActionError(null);
+        try {
+          await createDeployment({ ...payload, confirmation_token: 'ARM' });
+          setArmModal(null);
+          setFormKey(k => k + 1);
+          await loadDeployments();
+        } catch (err) {
+          setActionError(err.message);
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  }
+
+  function requestArm(dep) {
+    setActionError(null);
+    setArmModal({
+      title: 'Arm deployment',
+      body: html`<span>This resumes placing real orders into your Trading 212 <span class="text-accent-400 font-medium">Demo</span> account. Type <span class="num text-mute-100">ARM</span> to confirm.</span>`,
+      onConfirm: async () => {
+        setBusy(true);
+        setActionError(null);
+        try {
+          await armDeployment(dep.id, 'ARM');
+          setArmModal(null);
+          await loadDeployments();
+        } catch (err) {
+          setActionError(err.message);
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  }
+
+  async function doDisarm(dep) {
+    setActionError(null);
+    setBusy(true);
+    try {
+      await disarmDeployment(dep.id);
+      await loadDeployments();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doRun(dep) {
+    setActionError(null);
+    setRunResult(null);
+    setBusy(true);
+    try {
+      const res = await runDeployment(dep.id);
+      setRunResult(res);
+      await loadDeployments();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (trackingId) {
+    return html`<${DeploymentTrackingPanel}
+      deploymentId=${trackingId} strategies=${strategies}
+      onBack=${() => setTrackingId(null)} />`;
+  }
+
+  return html`
+    <div class="p-6 space-y-4">
+      <div class="flex items-baseline justify-between">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400">Trading 212 · Demo</div>
+          <div class="text-lg text-mute-100 font-medium mt-0.5 flex items-center gap-2">
+            Deployments
+            <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-accent-500/20 text-accent-400 font-medium">
+              Demo
+            </span>
+          </div>
+        </div>
+        <button onClick=${onClose}
+          class="text-sm text-mute-300 hover:text-mute-100 transition px-2 py-1">
+          ← Back to run
+        </button>
+      </div>
+
+      <div class="text-xs text-mute-400 leading-relaxed">
+        A deployment runs a saved strategy on a schedule and places orders into your Trading 212
+        Demo account. A deployment is created <span class="text-accent-400">armed</span> — you confirm
+        by typing ARM. Pause it any time; re-arming asks for ARM again.
+      </div>
+
+      <${DeployCreateForm} key=${formKey} strategies=${strategies}
+        busy=${busy} onCreate=${requestCreate} />
+
+      ${actionError && !armModal && html`
+        <div class="bg-danger-500/10 border border-danger-500/30 rounded px-3 py-2 text-sm text-danger-500">
+          ${actionError}
+        </div>
+      `}
+
+      ${runResult && html`<${RunResultBanner} result=${runResult} onDismiss=${() => setRunResult(null)} />`}
+
+      <${DeploymentList}
+        deployments=${deployments} loading=${listLoading} error=${listError}
+        strategies=${strategies} busy=${busy}
+        onArm=${requestArm} onDisarm=${doDisarm} onRun=${doRun}
+        onTrack=${id => setTrackingId(id)} onReload=${loadDeployments} />
+
+      ${armModal && html`<${ArmModal}
+        title=${armModal.title} body=${armModal.body} busy=${busy} error=${actionError}
+        onConfirm=${armModal.onConfirm}
+        onCancel=${() => { setArmModal(null); setActionError(null); }} />`}
+    </div>
+  `;
+}
+
+
 // ---- App -----------------------------------------------------------
 
 function App() {
@@ -2305,8 +2855,15 @@ function App() {
     <div class="h-full flex flex-col">
       <header class="h-12 shrink-0 border-b border-ink-700 bg-ink-950 flex items-center px-4 gap-4">
         <div class="text-mute-100 font-semibold tracking-tight">Backtester</div>
-        <div class="text-mute-400 text-xs">Phase 10 · live (read-only Demo)</div>
+        <div class="text-mute-400 text-xs">Phase 11 · deploy (Demo)</div>
         <div class="ml-auto flex items-center gap-3 text-xs text-mute-300">
+          <button onClick=${() => setView(view === 'deploy' ? 'run' : 'deploy')}
+            class="px-3 py-1 rounded transition font-medium
+                   ${view === 'deploy'
+                     ? 'bg-accent-500 text-ink-950'
+                     : 'bg-ink-800 hover:bg-ink-700 text-mute-100'}">
+            Deploy
+          </button>
           <button onClick=${() => setView(view === 'live' ? 'run' : 'live')}
             class="px-3 py-1 rounded transition font-medium
                    ${view === 'live'
@@ -2366,6 +2923,8 @@ function App() {
                   }} />`
               : view === 'live'
                 ? html`<${LiveView} onClose=${() => setView('run')} />`
+              : view === 'deploy'
+                ? html`<${DeployView} strategies=${strategies} onClose=${() => setView('run')} />`
               : comparing
                 ? html`<${ComparisonView} pins=${pins} onClose=${() => setComparing(false)} />`
                 : html`
