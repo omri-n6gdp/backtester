@@ -68,7 +68,7 @@ from apscheduler.triggers.cron import CronTrigger
 from backend.data.prices import get_prices
 from backend.db import repo
 from backend.db.conn import connect
-from backend.deploy.orders import SubmitResult, submit_intents
+from backend.deploy.orders import SubmitResult, reconcile_orders, submit_intents
 from backend.deploy.runner import OrderIntent, compute_intents
 from backend.t212 import client as t212_client
 from backend.t212 import instruments
@@ -292,6 +292,16 @@ def run_deployment(deployment_id: str) -> DeploymentRunResult:
     submit_results: list[SubmitResult] = []
 
     try:
+        # Reconcile prior orders against T212 before acting (Phase 12.6) —
+        # best-effort, must not block the run.
+        try:
+            with connect() as conn:
+                reconcile_orders(conn, deployment_id=deployment_id)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "run_deployment %s: order reconciliation failed", deployment_id,
+            )
+
         strategy_code = _load_strategy_code(deployment["strategy_id"])
 
         price_ticker = resolve_price_ticker(deployment["ticker"])

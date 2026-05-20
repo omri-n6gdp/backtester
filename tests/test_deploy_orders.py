@@ -16,6 +16,7 @@ from backend.db.conn import connect
 from backend.deploy.orders import (
     SubmitResult,
     compute_request_id_hash,
+    reconcile_orders,
     submit_intents,
 )
 from backend.deploy.runner import OrderIntent
@@ -436,3 +437,66 @@ def test_submit_skips_a_requantified_intent_for_the_same_bar(
     assert r1[0].status == "SUBMITTED"
     assert r2[0].status == "SKIPPED_DUPLICATE"
     assert calls == 1, "the re-quantified same-bar intent must not place a 2nd order"
+
+
+# --- reconcile_orders (Phase 12.6) ---------------------------------------
+
+
+def _submit_one_order(deployment_id, t212_id, monkeypatch):
+    """Place one SUBMITTED order and return its internal order id."""
+    monkeypatch.setattr(t212_client, "place_market_order",
+                        lambda tk, q: {**_T212_RESPONSE, "id": t212_id})
+    with connect() as conn:
+        results = submit_intents(conn, deployment_id=deployment_id, intents=[_make_intent()])
+    return results[0].order_id
+
+
+def test_reconcile_marks_a_filled_order(fresh_db_with_deployment, monkeypatch):
+    order_id = _submit_one_order(fresh_db_with_deployment, 555, monkeypatch)
+    monkeypatch.setattr(t212_client, "get_order",
+                        lambda oid: {"id": oid, "status": "FILLED",
+                                     "filledQuantity": 1.0, "fillPrice": 201.5})
+    with connect() as conn:
+        changed = reconcile_orders(conn, deployment_id=fresh_db_with_deployment)
+    assert changed == 1
+    with connect() as conn:
+        orders = repo.list_orders_for_deployment(conn, fresh_db_with_deployment)
+        fills = repo.list_fills_for_order(conn, order_id)
+    assert orders[0]["status"] == "FILLED"
+    assert len(fills) == 1
+    assert fills[0]["filled_qty"] == 1.0
+    assert fills[0]["filled_price"] == 201.5
+
+
+def test_reconcile_marks_a_cancelled_order(fresh_db_with_deployment, monkeypatch):
+    _submit_one_order(fresh_db_with_deployment, 556, monkeypatch)
+    monkeypatch.setattr(t212_client, "get_order",
+                        lambda oid: {"id": oid, "status": "CANCELLED"})
+    with connect() as conn:
+        reconcile_orders(conn, deployment_id=fresh_db_with_deployment)
+        orders = repo.list_orders_for_deployment(conn, fresh_db_with_deployment)
+    assert orders[0]["status"] == "CANCELLED"
+
+
+def test_reconcile_leaves_a_working_order_submitted(fresh_db_with_deployment, monkeypatch):
+    _submit_one_order(fresh_db_with_deployment, 557, monkeypatch)
+    monkeypatch.setattr(t212_client, "get_order", lambda oid: {"id": oid, "status": "NEW"})
+    with connect() as conn:
+        changed = reconcile_orders(conn, deployment_id=fresh_db_with_deployment)
+        orders = repo.list_orders_for_deployment(conn, fresh_db_with_deployment)
+    assert changed == 0
+    assert orders[0]["status"] == "SUBMITTED"
+
+
+def test_reconcile_skips_an_order_when_t212_errors(fresh_db_with_deployment, monkeypatch):
+    _submit_one_order(fresh_db_with_deployment, 558, monkeypatch)
+
+    def boom(oid):
+        raise t212_client.T212UpstreamError("T212 down")
+
+    monkeypatch.setattr(t212_client, "get_order", boom)
+    with connect() as conn:
+        changed = reconcile_orders(conn, deployment_id=fresh_db_with_deployment)
+        orders = repo.list_orders_for_deployment(conn, fresh_db_with_deployment)
+    assert changed == 0
+    assert orders[0]["status"] == "SUBMITTED"  # unchanged; the error was swallowed

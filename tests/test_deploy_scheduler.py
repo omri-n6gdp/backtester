@@ -188,6 +188,8 @@ def test_run_deployment_is_idempotent_for_same_bar(fresh_db, monkeypatch):
     # Portfolio stays empty across both fires — isolates the hash mechanism
     # from the "portfolio already caught up" path.
     monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+    # The 2nd run reconciles the 1st run's order — keep it off the network.
+    monkeypatch.setattr(t212_client, "get_order", lambda oid: {"status": "NEW"})
 
     calls = []
 
