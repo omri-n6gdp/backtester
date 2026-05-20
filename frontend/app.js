@@ -2013,6 +2013,7 @@ function DeployCreateForm({ strategies, busy, onCreate }) {
     deployment_capital: '1000',
     order_type: 'market',
     schedule_cron: '5 21 * * 1-5',
+    maxPositionValue: '',
     paramsJson: '{}',
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -2028,9 +2029,13 @@ function DeployCreateForm({ strategies, busy, onCreate }) {
   }
 
   const capital = Number(form.deployment_capital);
+  // Max position value: empty = no cap; if filled, must be a positive number.
+  const maxPosRaw = form.maxPositionValue.trim();
+  const maxPos = maxPosRaw === '' ? null : Number(maxPosRaw);
+  const maxPosOk = maxPos === null || (Number.isFinite(maxPos) && maxPos > 0);
   const valid =
     !!form.strategy_id && form.ticker.trim() !== '' && form.schedule_cron.trim() !== ''
-    && Number.isFinite(capital) && capital > 0 && paramsOk;
+    && Number.isFinite(capital) && capital > 0 && paramsOk && maxPosOk;
 
   function submit() {
     if (!valid) return;
@@ -2040,6 +2045,7 @@ function DeployCreateForm({ strategies, busy, onCreate }) {
       timeframe: form.timeframe,
       params: parsedParams,
       deployment_capital: capital,
+      max_position_value: maxPos,
       order_type: form.order_type,
       schedule_cron: form.schedule_cron.trim(),
     });
@@ -2081,6 +2087,11 @@ function DeployCreateForm({ strategies, busy, onCreate }) {
         <${Field} label="Capital (account currency)">
           <input class=${inputCls()} type="number" min="1" value=${form.deployment_capital}
             onChange=${e => set('deployment_capital', e.target.value)} />
+        </${Field}>
+        <${Field} label="Max position (optional)">
+          <input class="${inputCls()} ${maxPosOk ? '' : 'border-danger-500'}"
+            type="number" min="0" placeholder="no cap" value=${form.maxPositionValue}
+            onChange=${e => set('maxPositionValue', e.target.value)} />
         </${Field}>
         <${Field} label="Order type">
           <select class=${inputCls()} value=${form.order_type}

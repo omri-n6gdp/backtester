@@ -235,3 +235,23 @@ def test_tracking_includes_orders_after_a_run(api_client, monkeypatch):
 
 def test_tracking_unknown_deployment_404(api_client):
     assert api_client.get("/deployments/nope/tracking").status_code == 404
+
+
+# --- max position size (Phase 12.3) --------------------------------------
+
+
+def test_create_deployment_with_max_position_value(api_client):
+    sid = post_strategy(api_client, "S", _STRATEGY)
+    resp = _create_deployment(api_client, sid, max_position_value=2500.0)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["max_position_value"] == 2500.0
+    # round-trips on GET
+    got = api_client.get(f"/deployments/{body['id']}").json()
+    assert got["max_position_value"] == 2500.0
+
+
+def test_create_deployment_without_max_position_value_is_uncapped(api_client):
+    sid = post_strategy(api_client, "S", _STRATEGY)
+    body = _create_deployment(api_client, sid).json()
+    assert body["max_position_value"] is None

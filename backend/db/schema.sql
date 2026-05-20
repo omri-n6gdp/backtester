@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS deployments (
     armed               INTEGER NOT NULL DEFAULT 0,
     created_at          TEXT NOT NULL,
     last_run_at         TEXT,                     -- ISO 8601; NULL until first run
+    max_position_value  REAL,                     -- Phase 12.3: hard cap on position value; NULL = no cap
     FOREIGN KEY (strategy_id) REFERENCES strategies(id)
 );
 CREATE INDEX IF NOT EXISTS idx_deployments_strategy ON deployments(strategy_id);

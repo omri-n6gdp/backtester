@@ -41,8 +41,28 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+# Columns added to a table after its initial CREATE. `migrate()` ALTERs
+# them into a pre-existing DB that predates them (CREATE TABLE IF NOT
+# EXISTS will not add a column to a table that already exists). schema.sql
+# also carries every column, so a fresh DB gets them on creation.
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "deployments": {"max_position_value": "REAL"},  # Phase 12.3
+}
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """ALTER-add any column in `_ADDED_COLUMNS` missing from its table."""
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
 def migrate() -> None:
-    """Apply schema.sql. Idempotent — uses CREATE TABLE IF NOT EXISTS throughout."""
+    """Apply schema.sql, then ALTER-in any columns added to existing tables
+    after their initial CREATE. Idempotent."""
     schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
     with connect() as conn:
         conn.executescript(schema_sql)
+        _ensure_columns(conn)

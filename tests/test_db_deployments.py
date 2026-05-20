@@ -269,3 +269,38 @@ def test_deleting_deployment_cascades_to_orders_and_fills(fresh_db):
         assert repo.get_deployment(conn, "dep-1") is None
         assert repo.find_order_by_request_id(conn, "abc1234567890abc") is None
         assert repo.list_fills_for_order(conn, "ord-1") == []
+
+
+def _deployment_columns() -> set[str]:
+    with connect() as conn:
+        return {r["name"] for r in conn.execute("PRAGMA table_info(deployments)")}
+
+
+def test_migrate_adds_max_position_value_to_an_old_deployments_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """Phase 12.3: migrate() ALTER-adds columns introduced after a table's
+    initial CREATE, so a DB predating the column still gets it."""
+    data_root = tmp_path / "btdata"
+    db_dir = data_root / "results"
+    db_dir.mkdir(parents=True)
+    monkeypatch.setattr("backend.storage.DATA_ROOT", data_root, raising=False)
+    monkeypatch.setattr("backend.storage.DB_DIR", db_dir, raising=False)
+    monkeypatch.setattr("backend.storage.DB_PATH", db_dir / "results.db", raising=False)
+
+    # An "old" deployments table — no max_position_value column.
+    with connect() as conn:
+        conn.execute(
+            "CREATE TABLE deployments (id TEXT PRIMARY KEY, strategy_id TEXT, "
+            "ticker TEXT, timeframe TEXT, params_json TEXT, deployment_capital REAL, "
+            "cost_config_json TEXT, order_type TEXT, schedule_cron TEXT, "
+            "armed INTEGER, created_at TEXT, last_run_at TEXT)"
+        )
+    assert "max_position_value" not in _deployment_columns()
+
+    from backend.db.conn import migrate
+    migrate()
+    assert "max_position_value" in _deployment_columns()
+
+    migrate()  # idempotent — a second run must not error
+    assert "max_position_value" in _deployment_columns()

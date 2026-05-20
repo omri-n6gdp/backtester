@@ -400,3 +400,46 @@ def test_compute_intents_applies_fx_factor():
     assert len(intents) == 1
     assert intents[0].side == "BUY"
     assert intents[0].qty == 25.0
+
+
+# --- max_position_value (Phase 12.3 — per-deployment position cap) --------
+
+
+def test_position_to_qty_clamps_to_max_position_value():
+    # 1.0 signal * 5000 capital = 5000 target value, but the cap is 2000.
+    qty = position_to_qty(
+        target_position=1.0, deployment_capital=5000.0,
+        current_price=100.0, max_position_value=2000.0,
+    )
+    assert qty == 20.0  # clamped value 2000 / price 100
+
+
+def test_position_to_qty_no_clamp_when_under_the_cap():
+    qty = position_to_qty(
+        target_position=1.0, deployment_capital=1000.0,
+        current_price=100.0, max_position_value=5000.0,
+    )
+    assert qty == 10.0  # 1000 target value is under the 5000 cap -> unchanged
+
+
+def test_position_to_qty_cap_applies_to_shorts():
+    qty = position_to_qty(
+        target_position=-1.0, deployment_capital=5000.0,
+        current_price=100.0, max_position_value=2000.0,
+    )
+    assert qty == -20.0  # clamped to -2000 / 100
+
+
+def test_compute_intents_honours_deployment_max_position_value():
+    data = make_synthetic_ohlcv(n=300).copy()
+    data.loc[data.index[-1], "close"] = 100.0
+    # 0.5 signal * 5000 capital = 2500 target value; cap 1000 -> clamped.
+    intents = compute_intents(
+        deployment=_deployment(max_position_value=1000.0),
+        strategy_code=_LONG_HALF_STRATEGY,
+        data=data,
+        portfolio=[],
+        as_of_timestamp="2026-05-19T21:00:00+00:00",
+    )
+    assert len(intents) == 1
+    assert intents[0].qty == 10.0  # capped 1000 / price 100

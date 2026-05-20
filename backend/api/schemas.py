@@ -404,6 +404,7 @@ class DeploymentCreateRequest(BaseModel):
     timeframe: str = "1d"
     params: dict[str, Any] = Field(default_factory=dict)
     deployment_capital: float = Field(gt=0)
+    max_position_value: float | None = Field(default=None, gt=0)  # hard cap; None = no cap
     cost_config: CostConfigModel | None = None
     order_type: str = "market"                      # "market" | "limit"
     schedule_cron: str = Field(min_length=1)        # 5-field crontab, interpreted in UTC
@@ -426,6 +427,7 @@ class DeploymentModel(BaseModel):
     timeframe: str
     params: dict[str, Any]
     deployment_capital: float
+    max_position_value: float | None = None
     cost_config: dict[str, Any]
     order_type: str
     schedule_cron: str

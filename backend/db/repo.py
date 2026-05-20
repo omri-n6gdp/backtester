@@ -205,19 +205,20 @@ def insert_deployment(
     schedule_cron: str,
     armed: bool,
     created_at: str,
+    max_position_value: float | None = None,
 ) -> None:
     conn.execute(
         """
         INSERT INTO deployments (
             id, strategy_id, ticker, timeframe, params_json,
             deployment_capital, cost_config_json, order_type,
-            schedule_cron, armed, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            schedule_cron, armed, created_at, max_position_value
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             deployment_id, strategy_id, ticker, timeframe, params_json,
             deployment_capital, cost_config_json, order_type,
-            schedule_cron, 1 if armed else 0, created_at,
+            schedule_cron, 1 if armed else 0, created_at, max_position_value,
         ),
     )
 
@@ -227,7 +228,7 @@ def get_deployment(conn: sqlite3.Connection, deployment_id: str) -> dict[str, An
         """
         SELECT id, strategy_id, ticker, timeframe, params_json,
                deployment_capital, cost_config_json, order_type,
-               schedule_cron, armed, created_at, last_run_at
+               schedule_cron, armed, created_at, last_run_at, max_position_value
         FROM deployments WHERE id = ?
         """,
         (deployment_id,),
@@ -245,7 +246,7 @@ def list_deployments(
     sql = (
         "SELECT id, strategy_id, ticker, timeframe, params_json, "
         "deployment_capital, cost_config_json, order_type, schedule_cron, "
-        "armed, created_at, last_run_at FROM deployments WHERE 1=1"
+        "armed, created_at, last_run_at, max_position_value FROM deployments WHERE 1=1"
     )
     args: list[Any] = []
     if strategy_id is not None:

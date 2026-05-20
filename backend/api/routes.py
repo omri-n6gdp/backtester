@@ -1310,6 +1310,7 @@ def _deployment_to_model(row: dict[str, Any]) -> DeploymentModel:
         armed=bool(row["armed"]),
         created_at=row["created_at"],
         last_run_at=row["last_run_at"],
+        max_position_value=row["max_position_value"],
     )
 
 
@@ -1376,6 +1377,7 @@ def create_deployment_route(req: DeploymentCreateRequest) -> DeploymentModel:
             schedule_cron=req.schedule_cron,
             armed=True,
             created_at=created_at,
+            max_position_value=req.max_position_value,
         )
         row = repo.get_deployment(conn, deployment_id)
 

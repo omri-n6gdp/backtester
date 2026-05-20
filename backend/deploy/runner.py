@@ -79,6 +79,7 @@ def position_to_qty(
     deployment_capital: float,
     current_price: float,
     price_fx_factor: float = 1.0,
+    max_position_value: float | None = None,
 ) -> float:
     """Convert a fractional position in [-1, +1] to an absolute share
     quantity. Truncates to 4 decimal places.
@@ -96,6 +97,9 @@ def position_to_qty(
             unit). The scheduler computes it — see
             `scheduler.account_fx_factor`. Without it, a GBP account
             buying a USD stock is mis-sized by the FX rate.
+        max_position_value: optional hard cap (account currency) on the
+            position value — `target_value` is clamped to ±this before
+            the share count is computed. None means no cap.
 
     Returns: signed share count (negative = short). The deployment layer
         does not currently support shorting equities on T212; the caller
@@ -109,6 +113,12 @@ def position_to_qty(
     # account currency so it divides like-for-like into the capital.
     price_in_account_ccy = current_price * price_fx_factor
     target_value = target_position * deployment_capital
+    # Safeguard (Phase 12.3): a hard cap on the position value, applied
+    # after sizing — the deployment never builds a position worth more
+    # than this, whatever the capital / signal / FX math produced.
+    if max_position_value is not None:
+        cap = abs(max_position_value)
+        target_value = max(-cap, min(cap, target_value))
     return round(target_value / price_in_account_ccy, 4)
 
 
@@ -208,11 +218,13 @@ def compute_intents(
     target_position = _latest_signal(positions)
 
     current_price = float(data["close"].iloc[-1])
+    max_pos = deployment.get("max_position_value")
     target_qty = position_to_qty(
         target_position=target_position,
         deployment_capital=float(deployment["deployment_capital"]),
         current_price=current_price,
         price_fx_factor=price_fx_factor,
+        max_position_value=float(max_pos) if max_pos is not None else None,
     )
     current_qty = _current_qty_for_ticker(portfolio, deployment["ticker"])
 

@@ -452,7 +452,7 @@ The protective layer before any real-money trading (Phase 13). Combines the orig
 
 **12.2 — ✅ Missed-run catch-up.** A scheduled run is silently skipped if the laptop is asleep at the cron minute. On server startup, detect a missed run (the last scheduled fire is later than `last_run_at`) and run it.
 
-**12.3 — Per-deployment max position size.** A hard cap on a deployment's position, independent of `deployment_capital`. First schema-change task — also establishes a small ADD COLUMN migration helper in `migrate()`.
+**12.3 — ✅ Per-deployment max position size.** A hard cap on a deployment's position, independent of `deployment_capital`. First schema-change task — also establishes a small ADD COLUMN migration helper in `migrate()`.
 
 **12.4 — Daily-loss circuit breaker.** A deployment auto-disarms if its loss for the day exceeds a set limit.
 
@@ -560,7 +560,7 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 12.2 — missed-run catch-up. On server startup `catch_up_missed_runs()` runs any armed deployment whose scheduled cron fire was missed while the machine was off (`_run_is_due` compares the last scheduled fire to `last_run_at`); idempotent, so it is a no-op if the deployment already acted on the current bar. 12.1 (order-idempotency fix) shipped just before. **Phase 11 COMPLETE; Phase 12.1–12.2 done.** **431 backend tests passing, all green.**
+**Last completed:** Phase 12.3 — per-deployment max position size. A deployment may carry an optional `max_position_value` hard cap; `runner.position_to_qty` clamps the target value to ±it after sizing. Added an ADD COLUMN migration helper (`_ensure_columns` in `db/conn.py`, driven by `_ADDED_COLUMNS`) so a pre-existing DB gains the new column on next `migrate()`. **Phase 11 COMPLETE; Phase 12.1–12.3 done.** **438 backend tests passing, all green.**
 
 Phase 10 (read-only Demo integration) shipped earlier and remains green: `backend/t212/client.py` (httpx + `BasicAuth`, read methods + error hierarchy), `backend/t212/instruments.py` (24h Parquet cache + `find_by_ticker`), `GET /t212/*` routes with a TTL cache, and the frontend `LiveView`. See "Commits" / git log for detail.
 
@@ -574,7 +574,7 @@ State at the end of Phase 11.4:
 
 **Commits in Phase 11 so far:** `05cca03` 11.1 client writes (8 tests) · `8212a58` 11.2 schema + repo (14 tests) · `addc6ac` 11.3 runner (22 tests) · `bc11192` 11.4 idempotent submitter (18 tests) · `96efbc4` 11.5 scheduler (19 tests) · `a1bef8e` 11.6 routes (22 tests) · `b1648ee` 11.7 frontend · `87942c2` 11.9 currency-correct sizing (9 tests). 11.8 was a verification checkpoint (no code commit).
 
-**Next up:** **Phase 12 — Safeguards & deployment hardening.** Omri chose to continue the roadmap from Phase 12; the Phase 15 strategy-research work is re-sequenced to follow it. Eight sub-tasks **12.1–12.8** — see the Phase 12 block. **12.1–12.2 done — next is 12.3, per-deployment max position size** (the first schema-change task; also adds a small ADD COLUMN migration helper).
+**Next up:** **Phase 12 — Safeguards & deployment hardening.** Omri chose to continue the roadmap from Phase 12; the Phase 15 strategy-research work is re-sequenced to follow it. Eight sub-tasks **12.1–12.8** — see the Phase 12 block. **12.1–12.3 done — next is 12.4, the daily-loss circuit breaker.**
 
 Remaining Phase 11 scope:
 - **11.5** ✅ `backend/deploy/scheduler.py` — APScheduler `BackgroundScheduler`, one cron job per armed deployment (job id `deployment:<id>`, in-memory jobstore, `register_all_armed()` rebuilds jobs from SQLite on boot). **Public API for 11.6 to wire routes to:** `run_deployment(id) -> DeploymentRunResult` (full pipeline, never raises; statuses OK / DISARMED / NOT_FOUND / NO_DATA / ERROR), `register_deployment(deployment_dict)`, `unregister_deployment(id)`, `register_all_armed()`, `start()`, `shutdown()`, `get_scheduler()`. `as_of` = last bar's timestamp, so re-firing the same trading day is idempotent. `armed` checked at registration AND fire time. Misfires are skipped, not run late. `resolve_price_ticker` bridges the T212 instrument code → yfinance symbol (the one place the two identifiers meet). Wired into `server.py` startup/shutdown hooks (kept out of `create_app()` so the test suite never spawns a thread). 19 tests.
