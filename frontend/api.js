@@ -187,3 +187,12 @@ export async function getDeploymentTracking(id) {
   const res = await fetch(`${API_BASE}/deployments/${encodeURIComponent(id)}/tracking`);
   return jsonOrThrow(res);
 }
+
+export async function killSwitch(confirmationToken) {
+  const res = await fetch(`${API_BASE}/killswitch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmation_token: confirmationToken }),
+  });
+  return jsonOrThrow(res);
+}

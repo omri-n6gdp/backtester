@@ -32,6 +32,9 @@ from backend.api.schemas import (
     HeatmapRequestModel,
     HeatmapResponseModel,
     HealthResponse,
+    KillOrderModel,
+    KillSwitchRequest,
+    KillSwitchResponse,
     MonteCarloConfigModel,
     MonteCarloResponseModel,
     OOSResponseModel,
@@ -1543,4 +1546,62 @@ def deployment_tracking_route(deployment_id: str) -> DeploymentTrackingResponse:
         expected_positions=expected_positions,
         expected_metrics=expected_metrics,
         expected_error=expected_error,
+    )
+
+
+@router.post("/killswitch", response_model=KillSwitchResponse)
+def killswitch_route(req: KillSwitchRequest) -> KillSwitchResponse:
+    """Kill switch — disarm every deployment and flatten every open T212
+    position with market closing orders.
+
+    Requires `confirmation_token == "KILL"`. Always returns 200 with a
+    full report — an emergency action must never fail opaquely. Disarming
+    happens first (local, reliable); the flatten follows and reports each
+    position's outcome individually so one rejection can't hide the rest.
+    """
+    if req.confirmation_token != "KILL":
+        raise HTTPException(
+            status_code=403,
+            detail='confirmation_token must be "KILL" to trigger the kill switch',
+        )
+
+    # 1. Disarm every deployment — local DB + scheduler, always succeeds.
+    with connect() as conn:
+        deployments = repo.list_deployments(conn)
+        for d in deployments:
+            repo.set_deployment_armed(conn, d["id"], False)
+    for d in deployments:
+        scheduler.unregister_deployment(d["id"])
+
+    # 2. Flatten every open position with a market closing order.
+    orders: list[KillOrderModel] = []
+    fetch_error: str | None = None
+    try:
+        portfolio = t212_client.get_portfolio()
+    except t212_client.T212Error as e:
+        portfolio = []
+        fetch_error = f"could not fetch open positions to flatten: {e!s}"
+
+    for pos in portfolio:
+        ticker = pos.get("ticker")
+        qty = float(pos.get("quantity") or 0.0)
+        if not ticker or abs(qty) < 1e-9:
+            continue
+        try:
+            resp = t212_client.place_market_order(ticker, -qty)  # close the position
+            oid = resp.get("id") if isinstance(resp, dict) else None
+            orders.append(KillOrderModel(
+                ticker=ticker, qty=qty, status="SUBMITTED",
+                t212_order_id=int(oid) if oid is not None else None, error=None,
+            ))
+        except t212_client.T212Error as e:
+            orders.append(KillOrderModel(
+                ticker=ticker, qty=qty, status="FAILED",
+                t212_order_id=None, error=str(e),
+            ))
+
+    return KillSwitchResponse(
+        deployments_disarmed=len(deployments),
+        orders=orders,
+        error=fetch_error,
     )

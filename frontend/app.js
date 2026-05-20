@@ -18,7 +18,7 @@ import {
   getLibrary, getRun,
   getT212Account, getT212Positions, getT212Orders, getT212Pies,
   listDeployments, createDeployment, armDeployment, disarmDeployment,
-  runDeployment, getDeploymentTracking,
+  runDeployment, getDeploymentTracking, killSwitch,
 } from './api.js';
 
 const html = htm.bind(React.createElement);
@@ -1971,11 +1971,11 @@ function LiveView({ onClose }) {
 
 // Modal: enables a live-order action only after the user types ARM.
 // Mounted only while active, so each open starts with an empty field.
-function ArmModal({ title, body, busy, error, onConfirm, onCancel }) {
+function ArmModal({ title, body, expect = 'ARM', busy, error, onConfirm, onCancel }) {
   const [token, setToken] = useState('');
   const inputRef = useRef(null);
   useEffect(() => { inputRef.current && inputRef.current.focus(); }, []);
-  const armed = token.trim() === 'ARM';
+  const armed = token.trim() === expect;
   return html`
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
          onClick=${() => { if (!busy) onCancel(); }}>
@@ -1984,7 +1984,7 @@ function ArmModal({ title, body, busy, error, onConfirm, onCancel }) {
         <div class="text-mute-100 font-semibold text-lg">${title}</div>
         <div class="text-sm text-mute-300 mt-2 leading-relaxed">${body}</div>
         <input ref=${inputRef} class="${inputCls()} mt-4 tracking-[0.3em]"
-          placeholder="Type ARM" value=${token}
+          placeholder=${'Type ' + expect} value=${token}
           onChange=${e => setToken(e.target.value)}
           onKeyDown=${e => { if (e.key === 'Enter' && armed && !busy) onConfirm(); }} />
         ${error && html`<div class="mt-3 text-sm text-danger-500">${error}</div>`}
@@ -2397,6 +2397,7 @@ function DeployView({ strategies, onClose }) {
   const [runResult, setRunResult] = useState(null);
   const [trackingId, setTrackingId] = useState(null);
   const [formKey, setFormKey] = useState(0);
+  const [killResult, setKillResult] = useState(null);
 
   async function loadDeployments() {
     setListLoading(true);
@@ -2484,6 +2485,29 @@ function DeployView({ strategies, onClose }) {
     }
   }
 
+  function requestKill() {
+    setActionError(null);
+    setArmModal({
+      title: 'Kill switch',
+      expect: 'KILL',
+      body: html`<span>This disarms <span class="text-mute-100 font-medium">every deployment</span> and places market orders to <span class="text-mute-100 font-medium">flatten every open position</span> in your Trading 212 Demo account. Type <span class="num text-mute-100">KILL</span> to confirm.</span>`,
+      onConfirm: async () => {
+        setBusy(true);
+        setActionError(null);
+        try {
+          const res = await killSwitch('KILL');
+          setArmModal(null);
+          setKillResult(res);
+          await loadDeployments();
+        } catch (err) {
+          setActionError(err.message);
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  }
+
   if (trackingId) {
     return html`<${DeploymentTrackingPanel}
       deploymentId=${trackingId} strategies=${strategies}
@@ -2502,10 +2526,17 @@ function DeployView({ strategies, onClose }) {
             </span>
           </div>
         </div>
-        <button onClick=${onClose}
-          class="text-sm text-mute-300 hover:text-mute-100 transition px-2 py-1">
-          ← Back to run
-        </button>
+        <div class="flex items-center gap-2">
+          <button onClick=${requestKill} disabled=${busy}
+            class="text-xs px-3 py-1.5 rounded font-medium bg-danger-500/90
+                   hover:bg-danger-500 text-white disabled:opacity-50 transition">
+            ⚠ Kill switch
+          </button>
+          <button onClick=${onClose}
+            class="text-sm text-mute-300 hover:text-mute-100 transition px-2 py-1">
+            ← Back to run
+          </button>
+        </div>
       </div>
 
       <div class="text-xs text-mute-400 leading-relaxed">
@@ -2525,6 +2556,19 @@ function DeployView({ strategies, onClose }) {
 
       ${runResult && html`<${RunResultBanner} result=${runResult} onDismiss=${() => setRunResult(null)} />`}
 
+      ${killResult && html`
+        <div class="flex items-start gap-3 border rounded px-3 py-2 text-sm
+                    bg-danger-500/10 border-danger-500/30 text-danger-500">
+          <div class="flex-1">
+            Kill switch fired — ${killResult.deployments_disarmed} deployment(s) disarmed,
+            ${' '}${killResult.orders.length} position(s) sent closing orders.${' '}
+            ${killResult.error || ''}
+          </div>
+          <button onClick=${() => setKillResult(null)}
+            class="text-mute-400 hover:text-mute-100 transition">✕</button>
+        </div>
+      `}
+
       <${DeploymentList}
         deployments=${deployments} loading=${listLoading} error=${listError}
         strategies=${strategies} busy=${busy}
@@ -2532,7 +2576,8 @@ function DeployView({ strategies, onClose }) {
         onTrack=${id => setTrackingId(id)} onReload=${loadDeployments} />
 
       ${armModal && html`<${ArmModal}
-        title=${armModal.title} body=${armModal.body} busy=${busy} error=${actionError}
+        title=${armModal.title} body=${armModal.body} expect=${armModal.expect}
+        busy=${busy} error=${actionError}
         onConfirm=${armModal.onConfirm}
         onCancel=${() => { setArmModal(null); setActionError(null); }} />`}
     </div>

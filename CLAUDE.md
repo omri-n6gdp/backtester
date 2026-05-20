@@ -456,7 +456,7 @@ The protective layer before any real-money trading (Phase 13). Combines the orig
 
 **12.4 — ✅ Circuit breaker (open-position loss).** A deployment carries an optional `max_loss_value`; when its open T212 position is underwater past that limit, `run_deployment` auto-disarms the deployment and places nothing (status `CIRCUIT_BREAKER`). Note: this is *open-position* loss, not a calendar-day reset — a true daily reset needs the 12.8 account-value snapshots.
 
-**12.5 — Kill switch.** A global "flatten everything" — disarm every deployment and place closing orders for all open positions. Route + a prominent frontend control + an "I understand" confirmation modal.
+**12.5 — ✅ Kill switch.** A global "flatten everything" — disarm every deployment and place closing orders for all open positions. Route + a prominent frontend control + an "I understand" confirmation modal.
 
 **12.6 — Fill reconciliation.** After an order is submitted, poll T212 for its status / fill price; populate the (unused) `fills_received` table; update `orders_sent`; show real fills in Tracking.
 
@@ -560,7 +560,7 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 12.4 — circuit breaker. A deployment may carry an optional `max_loss_value`; when its open T212 position is underwater past that limit, `run_deployment` auto-disarms the deployment and places nothing (`_circuit_breaker_tripped`; result status `CIRCUIT_BREAKER`). 12.3 just before added `max_position_value` (a hard position cap) and an ADD COLUMN migration helper in `db/conn.py`. **Phase 11 COMPLETE; Phase 12.1–12.4 done.** **444 backend tests passing, all green.**
+**Last completed:** Phase 12.5 — kill switch. `POST /killswitch` (requires `confirmation_token: "KILL"`) disarms every deployment and places market closing orders for every open T212 position, always returning a full report. Frontend: a red "Kill switch" button in the Deploy view opens a KILL confirmation modal (`ArmModal` generalised with an `expect` prop). **Phase 11 COMPLETE; Phase 12.1–12.5 done.** **446 backend tests passing, all green.**
 
 Phase 10 (read-only Demo integration) shipped earlier and remains green: `backend/t212/client.py` (httpx + `BasicAuth`, read methods + error hierarchy), `backend/t212/instruments.py` (24h Parquet cache + `find_by_ticker`), `GET /t212/*` routes with a TTL cache, and the frontend `LiveView`. See "Commits" / git log for detail.
 
@@ -574,7 +574,7 @@ State at the end of Phase 11.4:
 
 **Commits in Phase 11 so far:** `05cca03` 11.1 client writes (8 tests) · `8212a58` 11.2 schema + repo (14 tests) · `addc6ac` 11.3 runner (22 tests) · `bc11192` 11.4 idempotent submitter (18 tests) · `96efbc4` 11.5 scheduler (19 tests) · `a1bef8e` 11.6 routes (22 tests) · `b1648ee` 11.7 frontend · `87942c2` 11.9 currency-correct sizing (9 tests). 11.8 was a verification checkpoint (no code commit).
 
-**Next up:** **Phase 12 — Safeguards & deployment hardening.** Omri chose to continue the roadmap from Phase 12; the Phase 15 strategy-research work is re-sequenced to follow it. Eight sub-tasks **12.1–12.8** — see the Phase 12 block. **12.1–12.4 done — next is 12.5, the kill switch.**
+**Next up:** **Phase 12 — Safeguards & deployment hardening.** Omri chose to continue the roadmap from Phase 12; the Phase 15 strategy-research work is re-sequenced to follow it. Eight sub-tasks **12.1–12.8** — see the Phase 12 block. **12.1–12.5 done — next is 12.6, fill reconciliation.**
 
 Remaining Phase 11 scope:
 - **11.5** ✅ `backend/deploy/scheduler.py` — APScheduler `BackgroundScheduler`, one cron job per armed deployment (job id `deployment:<id>`, in-memory jobstore, `register_all_armed()` rebuilds jobs from SQLite on boot). **Public API for 11.6 to wire routes to:** `run_deployment(id) -> DeploymentRunResult` (full pipeline, never raises; statuses OK / DISARMED / NOT_FOUND / NO_DATA / ERROR), `register_deployment(deployment_dict)`, `unregister_deployment(id)`, `register_all_armed()`, `start()`, `shutdown()`, `get_scheduler()`. `as_of` = last bar's timestamp, so re-firing the same trading day is idempotent. `armed` checked at registration AND fire time. Misfires are skipped, not run late. `resolve_price_ticker` bridges the T212 instrument code → yfinance symbol (the one place the two identifiers meet). Wired into `server.py` startup/shutdown hooks (kept out of `create_app()` so the test suite never spawns a thread). 19 tests.

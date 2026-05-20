@@ -262,3 +262,34 @@ def test_create_deployment_with_max_loss_value(api_client):
     resp = _create_deployment(api_client, sid, max_loss_value=600.0)
     assert resp.status_code == 200, resp.text
     assert resp.json()["max_loss_value"] == 600.0
+
+
+# --- kill switch (Phase 12.5) --------------------------------------------
+
+
+def test_killswitch_requires_token(api_client):
+    resp = api_client.post("/killswitch", json={"confirmation_token": "nope"})
+    assert resp.status_code == 403
+
+
+def test_killswitch_disarms_all_deployments_and_flattens(api_client, monkeypatch):
+    sid = post_strategy(api_client, "S", _STRATEGY)
+    d1 = _create_deployment(api_client, sid).json()
+    d2 = _create_deployment(api_client, sid, ticker="MSFT_US_EQ").json()
+    monkeypatch.setattr(t212_client, "get_portfolio",
+                        lambda: [{"ticker": "AAPL_US_EQ", "quantity": 5.0},
+                                 {"ticker": "TSLA_US_EQ", "quantity": 2.0}])
+    placed = []
+    monkeypatch.setattr(t212_client, "place_market_order",
+                        lambda tk, q: placed.append((tk, q)) or {"id": 1})
+
+    resp = api_client.post("/killswitch", json={"confirmation_token": "KILL"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deployments_disarmed"] == 2
+    assert len(body["orders"]) == 2
+    # closing orders sell the held quantity
+    assert placed == [("AAPL_US_EQ", -5.0), ("TSLA_US_EQ", -2.0)]
+    # both deployments are now paused
+    assert api_client.get(f"/deployments/{d1['id']}").json()["armed"] is False
+    assert api_client.get(f"/deployments/{d2['id']}").json()["armed"] is False

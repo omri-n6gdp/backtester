@@ -498,3 +498,28 @@ class DeploymentTrackingResponse(BaseModel):
     expected_positions: list[float | None]
     expected_metrics: dict[str, Any]
     expected_error: str | None = None
+
+
+# ---------- /killswitch (Phase 12.5) ----------
+class KillSwitchRequest(BaseModel):
+    """Body for POST /killswitch. `confirmation_token` must be "KILL"."""
+    model_config = ConfigDict(extra="forbid")
+
+    confirmation_token: str = Field(min_length=1)
+
+
+class KillOrderModel(BaseModel):
+    """One open position the kill switch sent a closing order for."""
+    ticker: str
+    qty: float
+    status: str                 # SUBMITTED | FAILED
+    t212_order_id: int | None = None
+    error: str | None = None
+
+
+class KillSwitchResponse(BaseModel):
+    """Outcome of the kill switch: every deployment disarmed, every open
+    position sent a market closing order."""
+    deployments_disarmed: int
+    orders: list[KillOrderModel]
+    error: str | None = None    # set if open positions could not be fetched
