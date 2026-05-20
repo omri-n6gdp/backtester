@@ -519,7 +519,7 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 11.6 — deployment HTTP routes. **414 tests passing, all green.** Phase 11 is PARTIAL: 11.1–11.6 are done; the frontend and Done-When (11.7–11.8) are NOT done yet.
+**Last completed:** Phase 11.7 — deployment frontend (Deploy + Tracking views). **414 backend tests passing, all green.** Phase 11 is PARTIAL: 11.1–11.7 are built; the **11.8 Done-When checkpoint** (deploy to Demo, run 2+ days, verify) has NOT been done yet.
 
 Phase 10 (read-only Demo integration) shipped earlier and remains green: `backend/t212/client.py` (httpx + `BasicAuth`, read methods + error hierarchy), `backend/t212/instruments.py` (24h Parquet cache + `find_by_ticker`), `GET /t212/*` routes with a TTL cache, and the frontend `LiveView`. See "Commits" / git log for detail.
 
@@ -531,14 +531,14 @@ State at the end of Phase 11.4:
 
 **No live order has been placed by the deploy engine yet** — 11.1's probe placed + cancelled one manual test order; the runner/submitter/scheduler have only been exercised against mocked T212 in tests.
 
-**Commits in Phase 11 so far:** `05cca03` 11.1 client writes (8 tests) · `8212a58` 11.2 schema + repo (14 tests) · `addc6ac` 11.3 runner (22 tests) · `bc11192` 11.4 idempotent submitter (18 tests) · `96efbc4` 11.5 scheduler (19 tests) · `a1bef8e` 11.6 routes (22 tests).
+**Commits in Phase 11 so far:** `05cca03` 11.1 client writes (8 tests) · `8212a58` 11.2 schema + repo (14 tests) · `addc6ac` 11.3 runner (22 tests) · `bc11192` 11.4 idempotent submitter (18 tests) · `96efbc4` 11.5 scheduler (19 tests) · `a1bef8e` 11.6 routes (22 tests) · `b1648ee` 11.7 frontend.
 
-**Next up:** **Phase 11.7 — frontend (Deploy + Tracking views)**, then 11.8 Done-When.
+**Next up:** **Phase 11.8 — Done-When checkpoint** (deploy SMA crossover on AAPL to Demo, run 2+ days, verify orders placed + Tracking plots expected-vs-actual).
 
 Remaining Phase 11 scope:
 - **11.5** ✅ `backend/deploy/scheduler.py` — APScheduler `BackgroundScheduler`, one cron job per armed deployment (job id `deployment:<id>`, in-memory jobstore, `register_all_armed()` rebuilds jobs from SQLite on boot). **Public API for 11.6 to wire routes to:** `run_deployment(id) -> DeploymentRunResult` (full pipeline, never raises; statuses OK / DISARMED / NOT_FOUND / NO_DATA / ERROR), `register_deployment(deployment_dict)`, `unregister_deployment(id)`, `register_all_armed()`, `start()`, `shutdown()`, `get_scheduler()`. `as_of` = last bar's timestamp, so re-firing the same trading day is idempotent. `armed` checked at registration AND fire time. Misfires are skipped, not run late. `resolve_price_ticker` bridges the T212 instrument code → yfinance symbol (the one place the two identifiers meet). Wired into `server.py` startup/shutdown hooks (kept out of `create_app()` so the test suite never spawns a thread). 19 tests.
 - **11.6** ✅ Seven `/deployments` routes in `backend/api/routes.py` + 8 schemas in `schemas.py`. `POST /deployments` (requires `confirmation_token: "ARM"`; creates the deployment **armed** and registers its cron job), `GET /deployments` (filters: strategy_id, armed_only), `GET /deployments/{id}`, `POST /deployments/{id}/arm` (also requires the ARM token), `POST /deployments/{id}/disarm` (no token — turning off is frictionless), `POST /deployments/{id}/run` (manual trigger; 200 + status OK/DISARMED/NO_DATA/ERROR), `GET /deployments/{id}/tracking` (deployment + `orders_sent` + a best-effort "expected" backtest curve that degrades to `expected_error` if it can't run). **ARM model:** every transition that ENABLES live orders (create, arm) needs the token; disarm and a manual run of an already-armed deployment don't. 22 tests.
-- **11.7** Frontend: "Deploy" view + "Tracking" view; ARM confirmation modal ("This will place real orders into your T212 Demo account. Type ARM to confirm.").
+- **11.7** ✅ Frontend (`frontend/app.js` + `api.js`). New top-bar **Deploy** button → `DeployView`: a create-deployment form (strategy, T212 ticker, timeframe, capital, order type, cron, params JSON) + a deployments list with per-row Arm / Pause / Run now / Tracking. `ArmModal` gates create + arm (the user types ARM); pause is one click. `DeploymentTrackingPanel`: config summary + expected equity curve (the strategy backtested) + expected CAGR/Sharpe/maxDD + the orders-placed table. `api.js` got the 7 `/deployments` calls. No backend change; the frontend has no test runner — `node --check` only. **Browser verification still pending** — and a running server must be restarted to pick up 11.5–11.7.
 - **11.8** Done-When: deploy SMA crossover on AAPL to Demo, run 2+ days, verify orders placed + Tracking plots live-vs-expected.
 
 **Decisions locked for the rest of Phase 11:** APScheduler for scheduling; `confirmation_token: "ARM"` required on `POST /deployments` even for Demo (reused with stricter wording for Phase 13 live).
@@ -551,6 +551,6 @@ Remaining Phase 11 scope:
 1. `cd ~/code/backtester`
 2. `claude` (or `claude resume` to continue a prior session)
 3. First prompt: "Read CLAUDE.md fully. Confirm by summarizing the current resume pointer and the next phase. Don't write any code yet — let's align before starting."
-4. After confirmation: "Let's continue Phase 11 from 11.7."
+4. After confirmation: "Let's do the Phase 11.8 Done-When checkpoint."
 
 The full repo state is reconstructable from git (`git log --oneline` on `main`); the price cache lives at `~/.backtester/prices/`; the T212 instruments cache at `~/.backtester/t212/`; `.env` has the required `T212_DEMO_KEY` + `T212_DEMO_SECRET`. Total tests: **414 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.
