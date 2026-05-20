@@ -188,6 +188,13 @@ export async function getDeploymentTracking(id) {
   return jsonOrThrow(res);
 }
 
+export async function deleteDeployment(id) {
+  const res = await fetch(`${API_BASE}/deployments/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  return jsonOrThrow(res);
+}
+
 export async function killSwitch(confirmationToken) {
   const res = await fetch(`${API_BASE}/killswitch`, {
     method: 'POST',

@@ -15,6 +15,7 @@ from backend.db import repo
 from backend.db.conn import connect
 from backend.deploy.orders import (
     SubmitResult,
+    cancel_working_orders,
     compute_request_id_hash,
     reconcile_orders,
     submit_intents,
@@ -500,3 +501,34 @@ def test_reconcile_skips_an_order_when_t212_errors(fresh_db_with_deployment, mon
         orders = repo.list_orders_for_deployment(conn, fresh_db_with_deployment)
     assert changed == 0
     assert orders[0]["status"] == "SUBMITTED"  # unchanged; the error was swallowed
+
+
+# --- cancel_working_orders (Phase 12.7) ----------------------------------
+
+
+def test_cancel_working_orders_cancels_and_marks_cancelled(
+    fresh_db_with_deployment, monkeypatch,
+):
+    _submit_one_order(fresh_db_with_deployment, 700, monkeypatch)
+    cancelled_ids = []
+    monkeypatch.setattr(t212_client, "cancel_order", lambda oid: cancelled_ids.append(oid))
+    with connect() as conn:
+        n = cancel_working_orders(conn, deployment_id=fresh_db_with_deployment)
+        orders = repo.list_orders_for_deployment(conn, fresh_db_with_deployment)
+    assert n == 1
+    assert cancelled_ids == [700]
+    assert orders[0]["status"] == "CANCELLED"
+
+
+def test_cancel_working_orders_skips_on_t212_error(fresh_db_with_deployment, monkeypatch):
+    _submit_one_order(fresh_db_with_deployment, 701, monkeypatch)
+
+    def boom(oid):
+        raise t212_client.T212Error("already filled")
+
+    monkeypatch.setattr(t212_client, "cancel_order", boom)
+    with connect() as conn:
+        n = cancel_working_orders(conn, deployment_id=fresh_db_with_deployment)
+        orders = repo.list_orders_for_deployment(conn, fresh_db_with_deployment)
+    assert n == 0
+    assert orders[0]["status"] == "SUBMITTED"  # left for reconciliation

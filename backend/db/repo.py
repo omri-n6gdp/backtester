@@ -280,6 +280,13 @@ def update_deployment_last_run(
     )
 
 
+def delete_deployment(conn: sqlite3.Connection, deployment_id: str) -> bool:
+    """Delete a deployment. ON DELETE CASCADE removes its `orders_sent`
+    rows (and, in turn, their fills). Returns True if the row existed."""
+    cur = conn.execute("DELETE FROM deployments WHERE id = ?", (deployment_id,))
+    return cur.rowcount > 0
+
+
 def insert_order(
     conn: sqlite3.Connection,
     *,

@@ -66,6 +66,7 @@ from backend.data.prices import get_prices
 from backend.db import repo
 from backend.db.conn import connect
 from backend.deploy import scheduler
+from backend.deploy.orders import cancel_working_orders
 from backend.engine.costs import CostConfig, DEFAULT_COST_CONFIG
 from backend.engine.event_driven import StopConfig, run_event_driven
 from backend.engine.metrics import compute_metrics
@@ -1368,6 +1369,12 @@ def create_deployment_route(req: DeploymentCreateRequest) -> DeploymentModel:
         strat = repo.get_strategy(conn, req.strategy_id)
         if strat is None or strat["active"] == 0:
             raise HTTPException(status_code=404, detail="strategy not found")
+        if any(d["ticker"] == req.ticker for d in repo.list_deployments(conn)):
+            raise HTTPException(
+                status_code=409,
+                detail=f"a deployment for {req.ticker} already exists — "
+                       "delete it first (one deployment per ticker)",
+            )
         repo.insert_deployment(
             conn,
             deployment_id=deployment_id,
@@ -1440,6 +1447,7 @@ def disarm_deployment_route(deployment_id: str) -> DeploymentModel:
         if row is None:
             raise HTTPException(status_code=404, detail="deployment not found")
         repo.set_deployment_armed(conn, deployment_id, False)
+        cancel_working_orders(conn, deployment_id=deployment_id)
         row = repo.get_deployment(conn, deployment_id)
     scheduler.unregister_deployment(deployment_id)
     return _deployment_to_model(row)
@@ -1570,6 +1578,7 @@ def killswitch_route(req: KillSwitchRequest) -> KillSwitchResponse:
         deployments = repo.list_deployments(conn)
         for d in deployments:
             repo.set_deployment_armed(conn, d["id"], False)
+            cancel_working_orders(conn, deployment_id=d["id"])
     for d in deployments:
         scheduler.unregister_deployment(d["id"])
 
@@ -1605,3 +1614,19 @@ def killswitch_route(req: KillSwitchRequest) -> KillSwitchResponse:
         orders=orders,
         error=fetch_error,
     )
+
+
+@router.delete("/deployments/{deployment_id}")
+def delete_deployment_route(deployment_id: str) -> dict[str, Any]:
+    """Delete a deployment — cancels any still-working order, then removes
+    the row and (via ON DELETE CASCADE) its order + fill history. There is
+    no separate edit route: a strategy/ticker change is better expressed
+    as delete + recreate, and capital/limit changes likewise."""
+    with connect() as conn:
+        row = repo.get_deployment(conn, deployment_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="deployment not found")
+        cancel_working_orders(conn, deployment_id=deployment_id)
+        repo.delete_deployment(conn, deployment_id)
+    scheduler.unregister_deployment(deployment_id)
+    return {"deployment_id": deployment_id, "deleted": True}

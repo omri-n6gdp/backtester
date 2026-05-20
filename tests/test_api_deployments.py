@@ -293,3 +293,30 @@ def test_killswitch_disarms_all_deployments_and_flattens(api_client, monkeypatch
     # both deployments are now paused
     assert api_client.get(f"/deployments/{d1['id']}").json()["armed"] is False
     assert api_client.get(f"/deployments/{d2['id']}").json()["armed"] is False
+
+
+# --- delete / one-per-ticker (Phase 12.7) --------------------------------
+
+
+def test_delete_deployment(api_client):
+    sid = post_strategy(api_client, "S", _STRATEGY)
+    dep = _create_deployment(api_client, sid).json()
+    resp = api_client.delete(f"/deployments/{dep['id']}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deleted"] is True
+    assert api_client.get(f"/deployments/{dep['id']}").status_code == 404
+
+
+def test_delete_unknown_deployment_404(api_client):
+    assert api_client.delete("/deployments/does-not-exist").status_code == 404
+
+
+def test_create_second_deployment_same_ticker_is_blocked(api_client):
+    sid = post_strategy(api_client, "S", _STRATEGY)
+    _create_deployment(api_client, sid)              # AAPL_US_EQ
+    resp = _create_deployment(api_client, sid)       # AAPL_US_EQ again
+    assert resp.status_code == 409
+    # deleting the first frees the ticker again
+    first = api_client.get("/deployments").json()["deployments"][0]
+    api_client.delete(f"/deployments/{first['id']}")
+    assert _create_deployment(api_client, sid).status_code == 200

@@ -297,3 +297,32 @@ def reconcile_orders(conn: sqlite3.Connection, *, deployment_id: str) -> int:
             changed += 1
         # else: NEW / still working — leave as SUBMITTED.
     return changed
+
+
+def cancel_working_orders(conn: sqlite3.Connection, *, deployment_id: str) -> int:
+    """Cancel every still-working T212 order for the deployment and mark
+    those `orders_sent` rows CANCELLED (Phase 12.7).
+
+    Best-effort: a T212 error on one order (e.g. it already filled, or the
+    post-place race window) is logged and the order is left as-is for
+    reconciliation to sort out. Returns the count cancelled. The caller
+    owns the transaction.
+    """
+    rows = repo.list_orders_for_deployment(conn, deployment_id)
+    working = [
+        r for r in rows
+        if r["status"] == "SUBMITTED" and r["t212_order_id"] is not None
+    ]
+    cancelled = 0
+    for row in working:
+        try:
+            t212_client.cancel_order(int(row["t212_order_id"]))
+        except t212_client.T212Error as e:
+            logger.warning(
+                "cancel_working_orders: cancel_order(%s) failed: %s",
+                row["t212_order_id"], e,
+            )
+            continue
+        repo.update_order_status(conn, row["id"], status="CANCELLED")
+        cancelled += 1
+    return cancelled

@@ -460,7 +460,7 @@ The protective layer before any real-money trading (Phase 13). Combines the orig
 
 **12.6 — ✅ Fill reconciliation.** After an order is submitted, poll T212 for its status / fill price; populate the (unused) `fills_received` table; update `orders_sent`; show real fills in Tracking.
 
-**12.7 — Deployment management.** Delete / edit a deployment (today it can only be paused). Block / warn on a second deployment for a ticker that already has one. Disarm cancels any still-working T212 order.
+**12.7 — ✅ Deployment management.** `DELETE /deployments/{id}` removes a deployment (cancels working orders, then cascades away its orders + fills). `POST /deployments` blocks a second deployment for a ticker that already has one (409). Disarm — and the kill switch — cancel any still-working T212 order via `orders.cancel_working_orders`. No separate edit route: a strategy/ticker/capital change is delete + recreate.
 
 **12.8 — Hardening & polish.** Tighten CORS (`allow_origins` is `*` on order-placing routes). Per-run history (one row per run + outcome, shown in Tracking). Rebase Tracking's expected curve to the live period. Order/error notifications. Schedule presets ("after US close") instead of raw cron. Account-cash precheck; strategy-active check in the runner.
 
@@ -560,7 +560,7 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 12.6 — fill reconciliation. `orders.reconcile_orders` asks T212 (`get_order`) for the real state of each SUBMITTED order and updates `orders_sent` (→ FILLED / CANCELLED / REJECTED), recording a row in `fills_received` on a fill; `run_deployment` reconciles before acting each run. Fill price is best-effort (T212's filled-order schema is undocumented — the full response is kept in `raw_json`). **Phase 11 COMPLETE; Phase 12.1–12.6 done.** **450 backend tests passing, all green.**
+**Last completed:** Phase 12.7 — deployment management. `DELETE /deployments/{id}` cancels working orders then removes the deployment (orders + fills cascade). `POST /deployments` rejects a second deployment for an already-deployed ticker (409). Disarm and the kill switch cancel still-working T212 orders (`orders.cancel_working_orders`). No separate edit route — a change is delete + recreate. **Phase 11 COMPLETE; Phase 12.1–12.7 done.** **455 backend tests passing, all green.**
 
 Phase 10 (read-only Demo integration) shipped earlier and remains green: `backend/t212/client.py` (httpx + `BasicAuth`, read methods + error hierarchy), `backend/t212/instruments.py` (24h Parquet cache + `find_by_ticker`), `GET /t212/*` routes with a TTL cache, and the frontend `LiveView`. See "Commits" / git log for detail.
 
@@ -574,7 +574,7 @@ State at the end of Phase 11.4:
 
 **Commits in Phase 11 so far:** `05cca03` 11.1 client writes (8 tests) · `8212a58` 11.2 schema + repo (14 tests) · `addc6ac` 11.3 runner (22 tests) · `bc11192` 11.4 idempotent submitter (18 tests) · `96efbc4` 11.5 scheduler (19 tests) · `a1bef8e` 11.6 routes (22 tests) · `b1648ee` 11.7 frontend · `87942c2` 11.9 currency-correct sizing (9 tests). 11.8 was a verification checkpoint (no code commit).
 
-**Next up:** **Phase 12 — Safeguards & deployment hardening.** Omri chose to continue the roadmap from Phase 12; the Phase 15 strategy-research work is re-sequenced to follow it. Eight sub-tasks **12.1–12.8** — see the Phase 12 block. **12.1–12.6 done — next is 12.7, deployment management (delete/edit, one-per-ticker, disarm-cancels-orders).**
+**Next up:** **Phase 12 — Safeguards & deployment hardening.** Omri chose to continue the roadmap from Phase 12; the Phase 15 strategy-research work is re-sequenced to follow it. Eight sub-tasks **12.1–12.8** — see the Phase 12 block. **12.1–12.7 done — next is 12.8, hardening & polish (CORS, run history, tracking-curve rebase, notifications, schedule presets).**
 
 Remaining Phase 11 scope:
 - **11.5** ✅ `backend/deploy/scheduler.py` — APScheduler `BackgroundScheduler`, one cron job per armed deployment (job id `deployment:<id>`, in-memory jobstore, `register_all_armed()` rebuilds jobs from SQLite on boot). **Public API for 11.6 to wire routes to:** `run_deployment(id) -> DeploymentRunResult` (full pipeline, never raises; statuses OK / DISARMED / NOT_FOUND / NO_DATA / ERROR), `register_deployment(deployment_dict)`, `unregister_deployment(id)`, `register_all_armed()`, `start()`, `shutdown()`, `get_scheduler()`. `as_of` = last bar's timestamp, so re-firing the same trading day is idempotent. `armed` checked at registration AND fire time. Misfires are skipped, not run late. `resolve_price_ticker` bridges the T212 instrument code → yfinance symbol (the one place the two identifiers meet). Wired into `server.py` startup/shutdown hooks (kept out of `create_app()` so the test suite never spawns a thread). 19 tests.

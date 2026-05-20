@@ -18,7 +18,7 @@ import {
   getLibrary, getRun,
   getT212Account, getT212Positions, getT212Orders, getT212Pies,
   listDeployments, createDeployment, armDeployment, disarmDeployment,
-  runDeployment, getDeploymentTracking, killSwitch,
+  runDeployment, getDeploymentTracking, killSwitch, deleteDeployment,
 } from './api.js';
 
 const html = htm.bind(React.createElement);
@@ -2171,7 +2171,7 @@ function RunResultBanner({ result, onDismiss }) {
 }
 
 function DeploymentList({ deployments, loading, error, strategies, busy,
-                          onArm, onDisarm, onRun, onTrack, onReload }) {
+                          onArm, onDisarm, onRun, onTrack, onDelete, onReload }) {
   const nameOf = (id) => {
     const s = strategies.find(x => x.id === id);
     return s ? s.name : id.slice(0, 8);
@@ -2240,6 +2240,9 @@ function DeploymentList({ deployments, loading, error, strategies, busy,
                       <button onClick=${() => onTrack(d.id)} disabled=${busy}
                         class="text-xs px-2 py-1 rounded bg-ink-800 hover:bg-ink-700 text-mute-200
                                disabled:opacity-50 transition">Tracking</button>
+                      <button onClick=${() => onDelete(d)} disabled=${busy}
+                        class="text-xs px-2 py-1 rounded bg-ink-800 hover:bg-ink-700 text-danger-500
+                               disabled:opacity-50 transition">Delete</button>
                     </div>
                   </td>
                 </tr>
@@ -2470,6 +2473,22 @@ function DeployView({ strategies, onClose }) {
     }
   }
 
+  async function doDelete(dep) {
+    if (!window.confirm(
+      'Delete this deployment? Any working order is cancelled and its order history is removed.'
+    )) return;
+    setActionError(null);
+    setBusy(true);
+    try {
+      await deleteDeployment(dep.id);
+      await loadDeployments();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function doRun(dep) {
     setActionError(null);
     setRunResult(null);
@@ -2572,7 +2591,7 @@ function DeployView({ strategies, onClose }) {
       <${DeploymentList}
         deployments=${deployments} loading=${listLoading} error=${listError}
         strategies=${strategies} busy=${busy}
-        onArm=${requestArm} onDisarm=${doDisarm} onRun=${doRun}
+        onArm=${requestArm} onDisarm=${doDisarm} onRun=${doRun} onDelete=${doDelete}
         onTrack=${id => setTrackingId(id)} onReload=${loadDeployments} />
 
       ${armModal && html`<${ArmModal}
