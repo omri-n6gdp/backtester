@@ -480,7 +480,7 @@ Structured logging to `~/.backtester/logs/`. Error toast UI. Cache compaction ma
 
 Phase 11 (the deployment engine) is built. Omri's focus now shifts to the **author → backtest → optimise → library** loop, so he can build and evaluate a large library of strategies. This phase runs before Phase 12.
 
-**15.1 — BUG: the parameter sweep crashes for any non-SMA strategy.** Diagnosed 2026-05-20: `build_heatmap` (`backend/engine/robustness/heatmaps.py`) raises `KeyError` when a requested heatmap axis isn't a param of the swept strategy. The frontend hardcodes the heatmap axes to SMA's `short`/`long`; sweeping another strategy with a matching param grid → KeyError → `run_sweep`'s heatmap loop has no try/except → the `/backtest/sweep` route 500s. Fix: (a) `run_sweep` skips an un-buildable heatmap instead of failing the whole sweep; (b) the frontend defaults the heatmap axes to the actual param-grid keys.
+**15.1 — BUG: the parameter sweep crashes for any non-SMA strategy.** Diagnosed 2026-05-20: `build_heatmap` (`backend/engine/robustness/heatmaps.py`) raises `KeyError` when a requested heatmap axis isn't a param of the swept strategy. The frontend hardcodes the heatmap axes to SMA's `short`/`long`; sweeping another strategy with a matching param grid → KeyError → `run_sweep`'s heatmap loop has no try/except → the `/backtest/sweep` route 500s. Fix: (a) `run_sweep` skips an un-buildable heatmap instead of failing the whole sweep; (b) the frontend defaults the heatmap axes to the actual param-grid keys. **Status: (a) ✅ done (commit `99b011d`); (b) still to do — folds into the 15.5 "Optimise" rework.**
 
 **15.2 — BUG: the library shows duplicate runs.** Every backtest persists a fresh `runs` row, so re-running the same (strategy, ticker, dates, params) config piles up identical-looking library rows. Plus a double-submit gap — a fast double-click fires `/backtest` twice (~20ms-apart pairs are visible in the DB). Fix: dedupe the library by config (latest run per config) and/or upsert on persist; harden the Run button against double-submit.
 
@@ -556,7 +556,7 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 11.9 — currency-correct order sizing. Order sizing now converts the instrument-currency price into the account currency (via an FX rate — `scheduler.account_fx_factor`) before computing share counts. **Phase 11 is COMPLETE (11.1–11.9)** — the Trading 212 deployment engine is built, verified end-to-end against Demo, and currency-correct. **423 backend tests passing, all green.**
+**Last completed:** Phase 15.1 (backend) — the parameter sweep no longer crashes for non-SMA strategies (`run_sweep` skips an un-buildable heatmap instead of 500ing). **Phase 11 is COMPLETE (11.1–11.9)**; the 2026-05-20 deployment review and Omri's new direction are captured in the expanded Phase 12 and the new Phase 15. **425 backend tests passing, all green.**
 
 Phase 10 (read-only Demo integration) shipped earlier and remains green: `backend/t212/client.py` (httpx + `BasicAuth`, read methods + error hierarchy), `backend/t212/instruments.py` (24h Parquet cache + `find_by_ticker`), `GET /t212/*` routes with a TTL cache, and the frontend `LiveView`. See "Commits" / git log for detail.
 
