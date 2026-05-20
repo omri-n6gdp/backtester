@@ -414,9 +414,53 @@ def register_all_armed() -> None:
     logger.info("register_all_armed: %d armed deployment(s) processed", len(armed))
 
 
+def _run_is_due(cron_expr: str, last_run_at_iso: str | None, now: datetime) -> bool:
+    """True when a scheduled run is overdue — a cron fire time exists
+    strictly after `last_run_at` and at/before `now`. Also True when the
+    deployment has never run (`last_run_at` None / empty / unparseable)."""
+    if not last_run_at_iso:
+        return True
+    try:
+        last_run = datetime.fromisoformat(last_run_at_iso)
+    except ValueError:
+        return True
+    trigger = CronTrigger.from_crontab(cron_expr, timezone=SCHEDULER_TIMEZONE)
+    # First scheduled fire strictly after the last run.
+    next_fire = trigger.get_next_fire_time(None, last_run + timedelta(seconds=1))
+    return next_fire is not None and next_fire <= now
+
+
+def catch_up_missed_runs() -> None:
+    """Run any armed deployment whose scheduled run was missed while the
+    server was down — the scheduler only fires while the process is alive,
+    so a cron tick at a moment the machine was asleep is otherwise lost.
+
+    Called once at startup. Idempotent: if a deployment already acted on
+    the current bar, `run_deployment`'s idempotency check makes the
+    catch-up a harmless no-op (no duplicate order). One bad deployment
+    does not stop the others."""
+    now = datetime.now(timezone.utc)
+    with connect() as conn:
+        armed = repo.list_deployments(conn, armed_only=True)
+    n_caught_up = 0
+    for deployment in armed:
+        try:
+            if _run_is_due(deployment["schedule_cron"], deployment.get("last_run_at"), now):
+                logger.info("catch-up: running missed deployment %s", deployment["id"])
+                run_deployment(deployment["id"])
+                n_caught_up += 1
+        except Exception:  # noqa: BLE001 — one bad deployment must not skip the rest
+            logger.exception("catch-up failed for deployment %s", deployment.get("id"))
+    logger.info(
+        "catch_up_missed_runs: %d of %d armed deployment(s) were caught up",
+        n_caught_up, len(armed),
+    )
+
+
 def start() -> None:
-    """Start the scheduler thread (if not already running) and register a
-    job for every armed deployment. Safe to call once at server startup."""
+    """Start the scheduler thread (if not already running), register a job
+    for every armed deployment, and catch up any run missed while the
+    server was down. Safe to call once at server startup."""
     sched = get_scheduler()
     if not sched.running:
         sched.start()
@@ -425,6 +469,10 @@ def start() -> None:
         register_all_armed()
     except Exception:  # noqa: BLE001 — scheduler wiring must not crash boot
         logger.exception("register_all_armed failed during start()")
+    try:
+        catch_up_missed_runs()
+    except Exception:  # noqa: BLE001 — catch-up must not crash boot
+        logger.exception("catch_up_missed_runs failed during start()")
 
 
 def shutdown() -> None:

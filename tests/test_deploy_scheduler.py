@@ -376,8 +376,11 @@ def test_register_all_armed_skips_a_bad_cron(fresh_db):
     assert sched.get_job("deployment:dep-bad") is None
 
 
-def test_start_runs_scheduler_and_registers_armed(fresh_db):
+def test_start_runs_scheduler_and_registers_armed(fresh_db, monkeypatch):
     _seed_deployment(fresh_db, deployment_id="dep-armed", armed=True)
+    # start() also runs catch-up, which would otherwise do a real network
+    # run for this never-run deployment — stub it out.
+    monkeypatch.setattr(scheduler, "catch_up_missed_runs", lambda: None)
 
     scheduler.start()
 
@@ -473,3 +476,45 @@ def test_run_deployment_applies_fx_factor(fresh_db, monkeypatch):
     assert result.status == "OK"
     # 0.5 signal * 5000 capital = 2500; effective price 200*0.5=100 -> 25
     assert placed == [("AAPL_US_EQ", 25.0)]
+
+
+# --- missed-run catch-up (Phase 12.2) ------------------------------------
+
+
+def test_run_is_due_when_never_run():
+    now = datetime(2026, 5, 20, 15, 0, tzinfo=timezone.utc)
+    assert scheduler._run_is_due("0 12 * * *", None, now) is True
+
+
+def test_run_is_due_when_a_scheduled_fire_was_missed():
+    # Noon-daily cron; last ran two days ago -> the 19th and 20th noon
+    # fires fell in (last_run, now], so a run is overdue.
+    last_run = "2026-05-18T12:00:05+00:00"
+    now = datetime(2026, 5, 20, 15, 0, tzinfo=timezone.utc)
+    assert scheduler._run_is_due("0 12 * * *", last_run, now) is True
+
+
+def test_run_is_due_false_when_up_to_date():
+    # Ran just after today's noon fire; the next fire (tomorrow noon) is
+    # still in the future -> not due.
+    last_run = "2026-05-20T12:00:05+00:00"
+    now = datetime(2026, 5, 20, 15, 0, tzinfo=timezone.utc)
+    assert scheduler._run_is_due("0 12 * * *", last_run, now) is False
+
+
+def test_catch_up_runs_a_due_deployment(fresh_db, monkeypatch):
+    _seed_deployment(fresh_db, deployment_id="dep-due", armed=True)  # never run -> due
+    ran = []
+    monkeypatch.setattr(scheduler, "run_deployment", lambda i: ran.append(i))
+    scheduler.catch_up_missed_runs()
+    assert ran == ["dep-due"]
+
+
+def test_catch_up_skips_an_up_to_date_deployment(fresh_db, monkeypatch):
+    dep_id = _seed_deployment(fresh_db, deployment_id="dep-fresh", armed=True)
+    with connect() as conn:
+        repo.update_deployment_last_run(conn, dep_id, _now())  # ran just now
+    ran = []
+    monkeypatch.setattr(scheduler, "run_deployment", lambda i: ran.append(i))
+    scheduler.catch_up_missed_runs()
+    assert ran == []
