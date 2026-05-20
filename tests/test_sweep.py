@@ -267,6 +267,31 @@ def test_run_sweep_invalid_heatmap_metric_raises():
         run_sweep(_const_strategy, DATA, grid, heatmap_requests=hm_req)
 
 
+def test_run_sweep_heatmap_with_unknown_axis_is_skipped_not_fatal():
+    """Phase 15.1: a heatmap whose axes aren't params of the swept strategy
+    must be skipped, not crash the whole sweep. The frontend defaults the
+    heatmap axes to SMA's short/long, which broke the sweep for every other
+    strategy."""
+    grid = {"size": [0.3, 0.6]}
+    # `short` / `long` are not params of _const_strategy.
+    hm_req = [HeatmapRequest(x_param="short", y_param="long", metric_name="sharpe")]
+    result = run_sweep(_const_strategy, DATA, grid, heatmap_requests=hm_req)
+    assert result.n_combinations == 2
+    assert result.best_index is not None
+    assert result.heatmaps == []  # un-buildable heatmap omitted, sweep still ok
+
+
+def test_run_sweep_keeps_valid_heatmap_when_another_is_skipped():
+    grid = {"short": [5, 10], "long": [20, 30]}
+    hm_req = [
+        HeatmapRequest(x_param="short", y_param="long", metric_name="sharpe"),  # valid
+        HeatmapRequest(x_param="rsi", y_param="band", metric_name="sharpe"),    # axes absent
+    ]
+    result = run_sweep(_sma_strategy, DATA, grid, heatmap_requests=hm_req)
+    assert len(result.heatmaps) == 1
+    assert result.heatmaps[0].x_param == "short"
+
+
 # ---- API endpoint -------------------------------------------------------
 
 SIMPLE_STRATEGY_CODE = """

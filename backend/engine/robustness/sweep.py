@@ -43,6 +43,7 @@ in this module ever sees raw_positions before the shift.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import math
 from dataclasses import dataclass, field
 from itertools import product
@@ -58,6 +59,7 @@ from ..vectorized import BacktestResult, run_backtest
 from .deflated_sharpe import DeflatedSharpeResult, compute_deflated_sharpe
 from .heatmaps import HeatmapResult, build_heatmap
 
+logger = logging.getLogger(__name__)
 
 ParamGrid = Union[dict, list]
 
@@ -288,13 +290,23 @@ def run_sweep(
         # should see "this combo failed" as a visible artifact.
         sweep_pairs = [(c.params, c.metrics) for c in combo_results]
         for hr in hm_reqs:
-            heatmaps.append(build_heatmap(
-                sweep_pairs,
-                x_param=hr.x_param,
-                y_param=hr.y_param,
-                metric_name=hr.metric_name,
-                agg=hr.agg,
-            ))
+            try:
+                heatmaps.append(build_heatmap(
+                    sweep_pairs,
+                    x_param=hr.x_param,
+                    y_param=hr.y_param,
+                    metric_name=hr.metric_name,
+                    agg=hr.agg,
+                ))
+            except (KeyError, ValueError, TypeError) as e:
+                # A heatmap whose axes aren't params of the swept strategy
+                # (the frontend defaults them to SMA's short/long) must not
+                # sink the whole sweep — skip it. Combos, best combo and
+                # the deflated Sharpe are still returned.
+                logger.warning(
+                    "skipping un-buildable heatmap (x=%r y=%r metric=%r): %s",
+                    hr.x_param, hr.y_param, hr.metric_name, e,
+                )
 
     return SweepResult(
         combos=combo_results,
