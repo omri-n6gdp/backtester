@@ -108,6 +108,8 @@ class DeploymentRunResult:
         NOT_FOUND  no deployment with this id
         NO_DATA    price fetch returned an empty frame; nothing submitted
         ERROR      an exception was caught — see `error`
+        CIRCUIT_BREAKER  open-position loss exceeded max_loss_value; the
+                   deployment was disarmed and nothing was placed
     """
 
     deployment_id: str
@@ -242,6 +244,25 @@ def _load_strategy_code(strategy_id: str) -> str:
 # --- the pipeline (one deployment, one fire) ------------------------------
 
 
+def _circuit_breaker_tripped(
+    deployment: dict[str, Any], portfolio: list[dict[str, Any]],
+) -> bool:
+    """True when the deployment has a `max_loss_value` set and its open
+    T212 position is underwater past that limit (Phase 12.4). False when
+    no limit is set or no position is held. The T212 position `ppl` (open
+    P&L) and `max_loss_value` are both in the account currency."""
+    max_loss = deployment.get("max_loss_value")
+    if max_loss is None:
+        return False
+    for pos in portfolio:
+        if pos.get("ticker") == deployment["ticker"]:
+            ppl = pos.get("ppl")
+            if ppl is None:
+                return False
+            return float(ppl) <= -abs(float(max_loss))
+    return False
+
+
 def run_deployment(deployment_id: str) -> DeploymentRunResult:
     """Run the full deploy pipeline once for one deployment.
 
@@ -289,25 +310,37 @@ def run_deployment(deployment_id: str) -> DeploymentRunResult:
             # re-firing the job for the same trading day idempotent.
             as_of = data.index[-1].isoformat()
             portfolio = t212_client.get_portfolio()
-            fx_factor = account_fx_factor(deployment["ticker"])
-            intents = compute_intents(
-                deployment=deployment,
-                strategy_code=strategy_code,
-                data=data,
-                portfolio=portfolio,
-                as_of_timestamp=as_of,
-                price_fx_factor=fx_factor,
-            )
-            if intents:
+            if _circuit_breaker_tripped(deployment, portfolio):
+                # The open position is underwater past max_loss_value —
+                # disarm the deployment and place nothing (Phase 12.4).
+                logger.warning(
+                    "run_deployment %s: circuit breaker tripped — disarming",
+                    deployment_id,
+                )
                 with connect() as conn:
-                    submit_results = submit_intents(
-                        conn, deployment_id=deployment_id, intents=intents,
-                    )
-            n_submitted = sum(1 for r in submit_results if r.status == "SUBMITTED")
-            logger.info(
-                "run_deployment %s: as_of=%s intents=%d submitted=%d",
-                deployment_id, as_of, len(intents), n_submitted,
-            )
+                    repo.set_deployment_armed(conn, deployment_id, False)
+                unregister_deployment(deployment_id)
+                status = "CIRCUIT_BREAKER"
+            else:
+                fx_factor = account_fx_factor(deployment["ticker"])
+                intents = compute_intents(
+                    deployment=deployment,
+                    strategy_code=strategy_code,
+                    data=data,
+                    portfolio=portfolio,
+                    as_of_timestamp=as_of,
+                    price_fx_factor=fx_factor,
+                )
+                if intents:
+                    with connect() as conn:
+                        submit_results = submit_intents(
+                            conn, deployment_id=deployment_id, intents=intents,
+                        )
+                n_submitted = sum(1 for r in submit_results if r.status == "SUBMITTED")
+                logger.info(
+                    "run_deployment %s: as_of=%s intents=%d submitted=%d",
+                    deployment_id, as_of, len(intents), n_submitted,
+                )
     except Exception as exc:  # noqa: BLE001 — top-level job boundary
         logger.exception("run_deployment %s failed", deployment_id)
         status = "ERROR"

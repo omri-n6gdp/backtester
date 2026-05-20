@@ -46,7 +46,10 @@ def connect() -> Iterator[sqlite3.Connection]:
 # EXISTS will not add a column to a table that already exists). schema.sql
 # also carries every column, so a fresh DB gets them on creation.
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
-    "deployments": {"max_position_value": "REAL"},  # Phase 12.3
+    "deployments": {
+        "max_position_value": "REAL",  # Phase 12.3
+        "max_loss_value": "REAL",      # Phase 12.4
+    },
 }
 
 

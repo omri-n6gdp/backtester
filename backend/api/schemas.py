@@ -405,6 +405,7 @@ class DeploymentCreateRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     deployment_capital: float = Field(gt=0)
     max_position_value: float | None = Field(default=None, gt=0)  # hard cap; None = no cap
+    max_loss_value: float | None = Field(default=None, gt=0)  # circuit breaker; None = off
     cost_config: CostConfigModel | None = None
     order_type: str = "market"                      # "market" | "limit"
     schedule_cron: str = Field(min_length=1)        # 5-field crontab, interpreted in UTC
@@ -428,6 +429,7 @@ class DeploymentModel(BaseModel):
     params: dict[str, Any]
     deployment_capital: float
     max_position_value: float | None = None
+    max_loss_value: float | None = None
     cost_config: dict[str, Any]
     order_type: str
     schedule_cron: str
@@ -471,7 +473,7 @@ class SubmitResultModel(BaseModel):
 class DeploymentRunResponse(BaseModel):
     """Result of POST /deployments/{id}/run (manual trigger)."""
     deployment_id: str
-    status: str                 # OK | DISARMED | NO_DATA | ERROR
+    status: str                 # OK | DISARMED | NO_DATA | ERROR | CIRCUIT_BREAKER
     ran_at: str
     as_of_timestamp: str | None = None
     intent_count: int

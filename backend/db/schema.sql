@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS deployments (
     created_at          TEXT NOT NULL,
     last_run_at         TEXT,                     -- ISO 8601; NULL until first run
     max_position_value  REAL,                     -- Phase 12.3: hard cap on position value; NULL = no cap
+    max_loss_value      REAL,                     -- Phase 12.4: circuit breaker on open position loss; NULL = off
     FOREIGN KEY (strategy_id) REFERENCES strategies(id)
 );
 CREATE INDEX IF NOT EXISTS idx_deployments_strategy ON deployments(strategy_id);

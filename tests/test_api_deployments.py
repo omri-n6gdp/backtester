@@ -255,3 +255,10 @@ def test_create_deployment_without_max_position_value_is_uncapped(api_client):
     sid = post_strategy(api_client, "S", _STRATEGY)
     body = _create_deployment(api_client, sid).json()
     assert body["max_position_value"] is None
+
+
+def test_create_deployment_with_max_loss_value(api_client):
+    sid = post_strategy(api_client, "S", _STRATEGY)
+    resp = _create_deployment(api_client, sid, max_loss_value=600.0)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["max_loss_value"] == 600.0

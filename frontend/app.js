@@ -2014,6 +2014,7 @@ function DeployCreateForm({ strategies, busy, onCreate }) {
     order_type: 'market',
     schedule_cron: '5 21 * * 1-5',
     maxPositionValue: '',
+    maxLossValue: '',
     paramsJson: '{}',
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -2033,9 +2034,13 @@ function DeployCreateForm({ strategies, busy, onCreate }) {
   const maxPosRaw = form.maxPositionValue.trim();
   const maxPos = maxPosRaw === '' ? null : Number(maxPosRaw);
   const maxPosOk = maxPos === null || (Number.isFinite(maxPos) && maxPos > 0);
+  // Max loss (circuit breaker): empty = off; if filled, a positive number.
+  const maxLossRaw = form.maxLossValue.trim();
+  const maxLoss = maxLossRaw === '' ? null : Number(maxLossRaw);
+  const maxLossOk = maxLoss === null || (Number.isFinite(maxLoss) && maxLoss > 0);
   const valid =
     !!form.strategy_id && form.ticker.trim() !== '' && form.schedule_cron.trim() !== ''
-    && Number.isFinite(capital) && capital > 0 && paramsOk && maxPosOk;
+    && Number.isFinite(capital) && capital > 0 && paramsOk && maxPosOk && maxLossOk;
 
   function submit() {
     if (!valid) return;
@@ -2046,6 +2051,7 @@ function DeployCreateForm({ strategies, busy, onCreate }) {
       params: parsedParams,
       deployment_capital: capital,
       max_position_value: maxPos,
+      max_loss_value: maxLoss,
       order_type: form.order_type,
       schedule_cron: form.schedule_cron.trim(),
     });
@@ -2093,6 +2099,11 @@ function DeployCreateForm({ strategies, busy, onCreate }) {
             type="number" min="0" placeholder="no cap" value=${form.maxPositionValue}
             onChange=${e => set('maxPositionValue', e.target.value)} />
         </${Field}>
+        <${Field} label="Max loss — circuit breaker (optional)">
+          <input class="${inputCls()} ${maxLossOk ? '' : 'border-danger-500'}"
+            type="number" min="0" placeholder="off" value=${form.maxLossValue}
+            onChange=${e => set('maxLossValue', e.target.value)} />
+        </${Field}>
         <${Field} label="Order type">
           <select class=${inputCls()} value=${form.order_type}
             onChange=${e => set('order_type', e.target.value)}>
@@ -2134,7 +2145,8 @@ function RunResultBanner({ result, onDismiss }) {
   const status = result.status;
   const box =
     status === 'OK'    ? 'bg-accent-500/10 border-accent-500/30 text-accent-400' :
-    status === 'ERROR' ? 'bg-danger-500/10 border-danger-500/30 text-danger-500' :
+    (status === 'ERROR' || status === 'CIRCUIT_BREAKER')
+                       ? 'bg-danger-500/10 border-danger-500/30 text-danger-500' :
                          'bg-ink-800 border-ink-600 text-mute-200';
   let msg;
   if (status === 'OK') {
@@ -2145,6 +2157,8 @@ function RunResultBanner({ result, onDismiss }) {
     msg = 'No price data was available for this run — nothing was placed.';
   } else if (status === 'ERROR') {
     msg = `Run failed: ${result.error || 'unknown error'}`;
+  } else if (status === 'CIRCUIT_BREAKER') {
+    msg = 'Circuit breaker tripped — the open position exceeded the max-loss limit, so the deployment was disarmed.';
   } else {
     msg = `Run status: ${status}`;
   }

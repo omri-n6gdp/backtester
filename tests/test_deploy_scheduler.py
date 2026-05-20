@@ -99,6 +99,7 @@ def _seed_deployment(
     order_type: str = "market",
     cron: str = "5 21 * * 1-5",
     params: dict | None = None,
+    max_loss_value: float | None = None,
 ) -> str:
     """Insert a strategy (+ its code file) and a deployment row. Returns
     the deployment id."""
@@ -116,6 +117,7 @@ def _seed_deployment(
             params_json=json.dumps(params or {}), deployment_capital=capital,
             cost_config_json=json.dumps({}), order_type=order_type,
             schedule_cron=cron, armed=armed, created_at=_now(),
+            max_loss_value=max_loss_value,
         )
     return deployment_id
 
@@ -518,3 +520,49 @@ def test_catch_up_skips_an_up_to_date_deployment(fresh_db, monkeypatch):
     monkeypatch.setattr(scheduler, "run_deployment", lambda i: ran.append(i))
     scheduler.catch_up_missed_runs()
     assert ran == []
+
+
+# --- circuit breaker (Phase 12.4) ----------------------------------------
+
+
+def test_circuit_breaker_off_when_no_limit():
+    dep = {"ticker": "AAPL_US_EQ", "max_loss_value": None}
+    portfolio = [{"ticker": "AAPL_US_EQ", "ppl": -9999.0}]
+    assert scheduler._circuit_breaker_tripped(dep, portfolio) is False
+
+
+def test_circuit_breaker_trips_when_loss_exceeds_limit():
+    dep = {"ticker": "AAPL_US_EQ", "max_loss_value": 500.0}
+    portfolio = [{"ticker": "AAPL_US_EQ", "ppl": -600.0}]
+    assert scheduler._circuit_breaker_tripped(dep, portfolio) is True
+
+
+def test_circuit_breaker_holds_when_loss_within_limit():
+    dep = {"ticker": "AAPL_US_EQ", "max_loss_value": 500.0}
+    portfolio = [{"ticker": "AAPL_US_EQ", "ppl": -200.0}]
+    assert scheduler._circuit_breaker_tripped(dep, portfolio) is False
+
+
+def test_circuit_breaker_off_when_no_position_held():
+    dep = {"ticker": "AAPL_US_EQ", "max_loss_value": 500.0}
+    assert scheduler._circuit_breaker_tripped(dep, []) is False
+
+
+def test_run_deployment_trips_circuit_breaker_and_disarms(fresh_db, monkeypatch):
+    dep_id = _seed_deployment(fresh_db, armed=True, max_loss_value=500.0)
+    monkeypatch.setattr(scheduler, "get_prices",
+                        _recording_prices(make_synthetic_ohlcv(n=300)))
+    monkeypatch.setattr(scheduler, "resolve_price_ticker", lambda t: "AAPL")
+    # The deployment's AAPL position is down 600 — past the 500 limit.
+    monkeypatch.setattr(t212_client, "get_portfolio",
+                        lambda: [{"ticker": "AAPL_US_EQ", "quantity": 5.0, "ppl": -600.0}])
+    placed = []
+    monkeypatch.setattr(t212_client, "place_market_order",
+                        lambda tk, q: placed.append((tk, q)))
+
+    result = scheduler.run_deployment(dep_id)
+
+    assert result.status == "CIRCUIT_BREAKER"
+    assert placed == [], "a tripped breaker places nothing"
+    with connect() as conn:
+        assert repo.get_deployment(conn, dep_id)["armed"] == 0  # auto-disarmed
