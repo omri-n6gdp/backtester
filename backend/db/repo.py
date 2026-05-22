@@ -414,6 +414,7 @@ def list_runs_with_metrics(
     *,
     strategy_id: str | None = None,
     ticker: str | None = None,
+    latest_per_config: bool = False,
 ) -> list[dict[str, Any]]:
     """All runs joined with their strategy name and metrics. Filters are AND-ed.
 
@@ -422,6 +423,12 @@ def list_runs_with_metrics(
     in the same transaction). Returned rows include the run's `params_json`
     so callers can distinguish single / sweep / walk-forward modes via the
     embedded `mode` key.
+
+    When `latest_per_config` is set, runs are de-duplicated by their full
+    config — (strategy_id, ticker, timeframe, start_date, end_date,
+    params_json) — keeping only the most recent run for each config. Rows
+    arrive `created_at DESC`, so the first row seen for a config is the
+    latest. De-dup is display-only: no runs are deleted from the database.
     """
     where_parts = ["s.active = 1"]
     params: list[Any] = []
@@ -447,9 +454,18 @@ def list_runs_with_metrics(
         params,
     ).fetchall()
     out: list[dict[str, Any]] = []
+    seen_configs: set[tuple[Any, ...]] = set()
     for r in rows:
         if r["metrics_json"] is None:
             continue
+        if latest_per_config:
+            config_key = (
+                r["strategy_id"], r["ticker"], r["timeframe"],
+                r["start_date"], r["end_date"], r["params_json"],
+            )
+            if config_key in seen_configs:
+                continue
+            seen_configs.add(config_key)
         params_dict = json.loads(r["params_json"]) if r["params_json"] else {}
         mode = "single"
         if isinstance(params_dict, dict) and "mode" in params_dict:

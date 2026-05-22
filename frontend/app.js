@@ -2655,6 +2655,11 @@ function App() {
   });
 
   const [running, setRunning] = useState(false);
+  // Synchronous double-submit guard. `disabled=${running}` only blocks the
+  // button after React re-renders, leaving a window where a fast double-click
+  // fires onRun twice (~20ms-apart pairs were visible in the DB). The ref
+  // flips immediately, so the second call bails before any request goes out.
+  const runLockRef = useRef(false);
   const [runError, setRunError] = useState(null);
   const [result, setResult] = useState(null);
   const [sweepResult, setSweepResult] = useState(null);
@@ -2711,7 +2716,8 @@ function App() {
   );
 
   const onRun = async () => {
-    if (!selectedId) return;
+    if (!selectedId || runLockRef.current) return;
+    runLockRef.current = true;
     setRunning(true);
     setRunError(null);
 
@@ -2767,6 +2773,7 @@ function App() {
         setRunError(err.message);
       } finally {
         setRunning(false);
+        runLockRef.current = false;
       }
     } else {
       setSweepResult(null);
@@ -2776,6 +2783,7 @@ function App() {
       } catch {
         setRunError('Param grid JSON is invalid — check the syntax and try again.');
         setRunning(false);
+        runLockRef.current = false;
         return;
       }
 
@@ -2803,6 +2811,7 @@ function App() {
         setRunError(err.message);
       } finally {
         setRunning(false);
+        runLockRef.current = false;
       }
     }
   };

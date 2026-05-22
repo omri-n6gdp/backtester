@@ -943,10 +943,15 @@ def library_route(
     Filters by `strategy_id` and `ticker` (both optional, AND-ed).
     Ordering is client-side — the frontend combines component scores
     with user-chosen weights to produce a composite ranking.
+
+    Runs are de-duplicated by config so re-running the same backtest
+    doesn't pile up identical rows — only the latest run per config is
+    shown. History is kept in the DB; the de-dup is display-only.
     """
     with connect() as conn:
         rows = repo.list_runs_with_metrics(
             conn, strategy_id=strategy_id, ticker=ticker,
+            latest_per_config=True,
         )
         breadth_map = repo.count_distinct_tickers_per_strategy(conn)
 

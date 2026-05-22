@@ -73,6 +73,54 @@ def test_library_ticker_filter(library_client):
     assert body["runs"][0]["ticker"] == "SPY"
 
 
+def test_library_dedupes_identical_config(library_client):
+    """Re-running the exact same config must not pile up library rows."""
+    client, sid = library_client
+    cfg = {
+        "strategy_id": sid, "ticker": "SPY", "timeframe": "1d",
+        "start": "2010-01-01", "end": "2012-01-01",
+        "params": {"short": 5, "long": 20},
+    }
+    first = client.post("/backtest", json=cfg).json()["run_id"]
+    second = client.post("/backtest", json=cfg).json()["run_id"]
+    assert first != second  # both persisted — history is kept in the DB
+
+    runs = client.get("/library").json()["runs"]
+    assert len(runs) == 1, "identical config should collapse to one row"
+    # The surviving row is the most recent run, not the first.
+    assert runs[0]["run_id"] == second
+
+
+def test_library_keeps_distinct_param_configs(library_client):
+    """Different params on the same ticker are distinct configs — not deduped."""
+    client, sid = library_client
+    for long in (20, 30):
+        resp = client.post("/backtest", json={
+            "strategy_id": sid, "ticker": "SPY", "timeframe": "1d",
+            "start": "2010-01-01", "end": "2012-01-01",
+            "params": {"short": 5, "long": long},
+        })
+        assert resp.status_code == 200, resp.text
+
+    runs = client.get("/library").json()["runs"]
+    assert len(runs) == 2
+
+
+def test_library_keeps_distinct_date_ranges(library_client):
+    """Same params but a different window is a distinct config — not deduped."""
+    client, sid = library_client
+    for end in ("2012-01-01", "2013-01-01"):
+        resp = client.post("/backtest", json={
+            "strategy_id": sid, "ticker": "SPY", "timeframe": "1d",
+            "start": "2010-01-01", "end": end,
+            "params": {"short": 5, "long": 20},
+        })
+        assert resp.status_code == 200, resp.text
+
+    runs = client.get("/library").json()["runs"]
+    assert len(runs) == 2
+
+
 # ---- /runs/{run_id} ----------------------------------------------------
 
 def test_get_run_roundtrips_a_backtest(library_client):
