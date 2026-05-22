@@ -462,7 +462,7 @@ The protective layer before any real-money trading (Phase 13). Combines the orig
 
 **12.7 — ✅ Deployment management.** `DELETE /deployments/{id}` removes a deployment (cancels working orders, then cascades away its orders + fills). `POST /deployments` blocks a second deployment for a ticker that already has one (409). Disarm — and the kill switch — cancel any still-working T212 order via `orders.cancel_working_orders`. No separate edit route: a strategy/ticker/capital change is delete + recreate.
 
-**12.8 — Hardening & polish.** Tighten CORS (`allow_origins` is `*` on order-placing routes). Per-run history (one row per run + outcome, shown in Tracking). Rebase Tracking's expected curve to the live period. Order/error notifications. Schedule presets ("after US close") instead of raw cron. Account-cash precheck; strategy-active check in the runner.
+**12.8 — ✅ Hardening.** CORS tightened — `allow_origins` is now the two local origins (`127.0.0.1:8000`, `localhost:8000`), not `*`, so a malicious page in the same browser cannot reach the order-placing routes. `run_deployment` rejects an inactive (soft-deleted) strategy. **The UX-polish items — per-run history, Tracking expected-curve rebase, order/error notifications, schedule presets, account-cash precheck — are moved to Phase 14 (Polish).**
 
 **Done When:** kill switch flattens all positions; max-position + daily-loss breaker enforced and fail closed; a missed run is caught up on restart; Tracking shows real fills.
 
@@ -477,6 +477,8 @@ Generate `T212_LIVE_KEY`. Per-deployment "live activation token" flow. Smoke tes
 ### Phase 14 — Polish
 
 Structured logging to `~/.backtester/logs/`. Error toast UI. Cache compaction maintenance script. Time Machine backups. README + STRATEGIES.md + DEPLOYMENT.md. Replace deprecated `@app.on_event("startup")` with modern `lifespan`.
+
+**Deployment-polish items (moved from 12.8, 2026-05-22):** per-run history (one row per deployment run + outcome, shown in Tracking); rebase Tracking's expected curve to the deployment's live period; order/error notifications when a deployment trades or errors; schedule presets ("after US close") instead of raw cron; account-cash precheck before sizing.
 
 ---
 
@@ -560,7 +562,7 @@ These conventions are binding.
 
 ## Where we are right now (resume pointer)
 
-**Last completed:** Phase 12.7 — deployment management. `DELETE /deployments/{id}` cancels working orders then removes the deployment (orders + fills cascade). `POST /deployments` rejects a second deployment for an already-deployed ticker (409). Disarm and the kill switch cancel still-working T212 orders (`orders.cancel_working_orders`). No separate edit route — a change is delete + recreate. **Phase 11 COMPLETE; Phase 12.1–12.7 done.** **455 backend tests passing, all green.**
+**Last completed:** Phase 12.8 — hardening (CORS tightened to the two local origins; `run_deployment` rejects an inactive strategy). **Phase 12 is COMPLETE (12.1–12.8)** — the deployment engine now has its safeguards: idempotency fix, missed-run catch-up, max-position cap, loss circuit breaker, kill switch, fill reconciliation, delete/management, hardening. **Phase 11 + Phase 12 both COMPLETE.** **456 backend tests passing, all green.**
 
 Phase 10 (read-only Demo integration) shipped earlier and remains green: `backend/t212/client.py` (httpx + `BasicAuth`, read methods + error hierarchy), `backend/t212/instruments.py` (24h Parquet cache + `find_by_ticker`), `GET /t212/*` routes with a TTL cache, and the frontend `LiveView`. See "Commits" / git log for detail.
 
@@ -574,7 +576,7 @@ State at the end of Phase 11.4:
 
 **Commits in Phase 11 so far:** `05cca03` 11.1 client writes (8 tests) · `8212a58` 11.2 schema + repo (14 tests) · `addc6ac` 11.3 runner (22 tests) · `bc11192` 11.4 idempotent submitter (18 tests) · `96efbc4` 11.5 scheduler (19 tests) · `a1bef8e` 11.6 routes (22 tests) · `b1648ee` 11.7 frontend · `87942c2` 11.9 currency-correct sizing (9 tests). 11.8 was a verification checkpoint (no code commit).
 
-**Next up:** **Phase 12 — Safeguards & deployment hardening.** Omri chose to continue the roadmap from Phase 12; the Phase 15 strategy-research work is re-sequenced to follow it. Eight sub-tasks **12.1–12.8** — see the Phase 12 block. **12.1–12.7 done — next is 12.8, hardening & polish (CORS, run history, tracking-curve rebase, notifications, schedule presets).**
+**Next up:** **Phase 12 — Safeguards & deployment hardening.** Omri chose to continue the roadmap from Phase 12; the Phase 15 strategy-research work is re-sequenced to follow it. **Phase 12 is COMPLETE.** The roadmap's next step, **Phase 13 — Going live (ISA)**, trades **real money** — it must NOT be started without Omri's explicit go-ahead (a live API key, real orders). The autonomous run therefore continues with **Phase 15 — Strategy research workflow** (15.2 onward) and **Phase 14 — Polish**; Phase 13 waits for Omri.
 
 Remaining Phase 11 scope:
 - **11.5** ✅ `backend/deploy/scheduler.py` — APScheduler `BackgroundScheduler`, one cron job per armed deployment (job id `deployment:<id>`, in-memory jobstore, `register_all_armed()` rebuilds jobs from SQLite on boot). **Public API for 11.6 to wire routes to:** `run_deployment(id) -> DeploymentRunResult` (full pipeline, never raises; statuses OK / DISARMED / NOT_FOUND / NO_DATA / ERROR), `register_deployment(deployment_dict)`, `unregister_deployment(id)`, `register_all_armed()`, `start()`, `shutdown()`, `get_scheduler()`. `as_of` = last bar's timestamp, so re-firing the same trading day is idempotent. `armed` checked at registration AND fire time. Misfires are skipped, not run late. `resolve_price_ticker` bridges the T212 instrument code → yfinance symbol (the one place the two identifiers meet). Wired into `server.py` startup/shutdown hooks (kept out of `create_app()` so the test suite never spawns a thread). 19 tests.
@@ -594,6 +596,6 @@ Remaining Phase 11 scope:
 1. `cd ~/code/backtester`
 2. `claude` (or `claude resume` to continue a prior session)
 3. First prompt: "Read CLAUDE.md fully. Confirm by summarizing the current resume pointer and the next phase. Don't write any code yet — let's align before starting."
-4. After confirmation: "Let's continue Phase 12 from 12.1."
+4. After confirmation: "Continue from Phase 15 — strategy research. Phase 13 (live trading) is gated on my explicit go-ahead."
 
 The full repo state is reconstructable from git (`git log --oneline` on `main`); the price cache lives at `~/.backtester/prices/`; the T212 instruments cache at `~/.backtester/t212/`; `.env` has the required `T212_DEMO_KEY` + `T212_DEMO_SECRET`. Total tests: **423 passing**; smoke baseline on SPY 2010–2026 SMA(50/200) sits at CAGR ~9.05%, Sharpe ~0.69, Max DD ~−33.7%, 8 trades.

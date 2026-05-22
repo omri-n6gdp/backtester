@@ -20,12 +20,14 @@ def create_app() -> FastAPI:
         description="Local-only backtesting engine. Bound to 127.0.0.1.",
     )
 
-    # Permissive CORS: server binds to localhost only, so cross-origin
-    # protection isn't doing useful work here. file:// origins send
-    # `Origin: null`, which "*" covers.
+    # CORS (Phase 12.8 hardening). The frontend is served by this same
+    # server, so app->API calls are same-origin and don't need CORS at
+    # all. We list the two local origins explicitly rather than "*" so a
+    # malicious page open in the same browser cannot POST to the
+    # order-placing routes (/deployments, /killswitch).
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],

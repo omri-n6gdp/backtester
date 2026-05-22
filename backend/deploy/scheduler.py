@@ -233,8 +233,8 @@ def _load_strategy_code(strategy_id: str) -> str:
     `run_deployment`) if the strategy row or its code file is missing."""
     with connect() as conn:
         strat = repo.get_strategy(conn, strategy_id)
-    if strat is None:
-        raise RuntimeError(f"strategy {strategy_id} not found")
+    if strat is None or strat["active"] == 0:
+        raise RuntimeError(f"strategy {strategy_id} not found or inactive")
     code_path = Path(strat["code_path"])
     if not code_path.exists():
         raise RuntimeError(f"strategy code file missing: {code_path}")

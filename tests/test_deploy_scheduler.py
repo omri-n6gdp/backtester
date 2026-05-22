@@ -568,3 +568,16 @@ def test_run_deployment_trips_circuit_breaker_and_disarms(fresh_db, monkeypatch)
     assert placed == [], "a tripped breaker places nothing"
     with connect() as conn:
         assert repo.get_deployment(conn, dep_id)["armed"] == 0  # auto-disarmed
+
+
+# --- hardening (Phase 12.8) ----------------------------------------------
+
+
+def test_run_deployment_errors_on_an_inactive_strategy(fresh_db):
+    """A deployment whose strategy has been soft-deleted must not run it."""
+    dep_id = _seed_deployment(fresh_db, armed=True)
+    with connect() as conn:
+        repo.soft_delete_strategy(conn, f"strat-{dep_id}")
+    result = scheduler.run_deployment(dep_id)
+    assert result.status == "ERROR"
+    assert "inactive" in (result.error or "").lower()
