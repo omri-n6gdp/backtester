@@ -66,6 +66,8 @@ class ScoredRun:
     dsr_score: float | None
     breadth_score: float
     recency_score: float
+    # Per-strategy flag (Phase 15.4) — favourites pin to the top of the library.
+    favourite: bool = False
 
 
 def _clamp01(x: float) -> float:
@@ -180,5 +182,6 @@ def compute_run_scores(
             dsr_score=None,  # not persisted today; frontend redistributes weight
             breadth_score=_breadth_score(distinct),
             recency_score=_recency_score(r["created_at"], now),
+            favourite=bool(r.get("favourite", False)),
         ))
     return out

@@ -50,6 +50,9 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "max_position_value": "REAL",  # Phase 12.3
         "max_loss_value": "REAL",      # Phase 12.4
     },
+    "strategies": {
+        "favourite": "INTEGER NOT NULL DEFAULT 0",  # Phase 15.4
+    },
 }
 
 

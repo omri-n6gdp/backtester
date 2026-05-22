@@ -133,6 +133,47 @@ def test_delete_strategy_soft_deletes(client: TestClient) -> None:
     assert client.get(f"/strategies/{sid}").status_code == 404
 
 
+# -------- /strategies/{id}/favourite (Phase 15.4) --------
+
+def test_favourite_strategies_sort_to_top(client: TestClient) -> None:
+    ids = []
+    for name in ("Alpha", "Beta", "Gamma"):
+        ids.append(client.post("/strategies", json={
+            "name": name, "description": "", "code": SAMPLE_STRATEGY,
+        }).json()["strategy_id"])
+    # Default ordering is newest-first.
+    names = [s["name"] for s in client.get("/strategies").json()]
+    assert names == ["Gamma", "Beta", "Alpha"]
+
+    # Favourite the oldest — it jumps to the top of the list.
+    r = client.post(f"/strategies/{ids[0]}/favourite", json={"favourite": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["favourite"] is True
+
+    listing = client.get("/strategies").json()
+    assert listing[0]["name"] == "Alpha"
+    assert listing[0]["favourite"] is True
+    assert all(s["favourite"] is False for s in listing[1:])
+
+
+def test_unfavourite_strategy(client: TestClient) -> None:
+    sid = client.post("/strategies", json={
+        "name": "SMA", "description": "", "code": SAMPLE_STRATEGY,
+    }).json()["strategy_id"]
+    # A new strategy is not a favourite.
+    assert client.get(f"/strategies/{sid}").json()["favourite"] is False
+
+    client.post(f"/strategies/{sid}/favourite", json={"favourite": True})
+    r = client.post(f"/strategies/{sid}/favourite", json={"favourite": False})
+    assert r.json()["favourite"] is False
+    assert client.get(f"/strategies/{sid}").json()["favourite"] is False
+
+
+def test_favourite_unknown_strategy_404(client: TestClient) -> None:
+    r = client.post("/strategies/does-not-exist/favourite", json={"favourite": True})
+    assert r.status_code == 404
+
+
 # -------- /backtest --------
 
 def test_backtest_happy(client: TestClient) -> None:

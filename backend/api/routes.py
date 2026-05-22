@@ -28,6 +28,7 @@ from backend.api.schemas import (
     DeploymentRunResponse,
     DeploymentTrackingResponse,
     EventDrivenBacktestRequest,
+    FavouriteRequest,
     StopConfigModel,
     HeatmapRequestModel,
     HeatmapResponseModel,
@@ -365,7 +366,10 @@ def list_strategies() -> list[StrategySummary]:
     with connect() as conn:
         rows = repo.list_strategies(conn, include_inactive=False)
     return [
-        StrategySummary(id=r["id"], name=r["name"], description=r["description"], created_at=r["created_at"])
+        StrategySummary(
+            id=r["id"], name=r["name"], description=r["description"],
+            created_at=r["created_at"], favourite=bool(r["favourite"]),
+        )
         for r in rows
     ]
 
@@ -385,7 +389,23 @@ def get_strategy(strategy_id: str) -> StrategyDetail:
         name=row["name"],
         description=row["description"],
         created_at=row["created_at"],
+        favourite=bool(row["favourite"]),
         code=code,
+    )
+
+
+@router.post("/strategies/{strategy_id}/favourite", response_model=StrategySummary)
+def set_strategy_favourite(strategy_id: str, req: FavouriteRequest) -> StrategySummary:
+    """Star or un-star a strategy. Favourites pin to the top of the
+    sidebar and the library. 404 if the strategy is unknown or deleted."""
+    with connect() as conn:
+        ok = repo.set_strategy_favourite(conn, strategy_id, req.favourite)
+        row = repo.get_strategy(conn, strategy_id) if ok else None
+    if not ok or row is None:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    return StrategySummary(
+        id=row["id"], name=row["name"], description=row["description"],
+        created_at=row["created_at"], favourite=bool(row["favourite"]),
     )
 
 
@@ -988,6 +1008,7 @@ def library_route(
             end_date=s.end_date,
             mode=s.mode,
             created_at=s.created_at,
+            favourite=s.favourite,
             metrics=s.metrics,
             sharpe_score=s.sharpe_score,
             calmar_score=s.calmar_score,

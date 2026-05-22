@@ -14,7 +14,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 
 import {
   getHealth, listStrategies, runBacktest, runSweep, runEventDriven,
-  validateStrategy, translateStrategy, createStrategy,
+  validateStrategy, translateStrategy, createStrategy, setStrategyFavourite,
   getLibrary, getRun,
   getT212Account, getT212Positions, getT212Orders, getT212Pies,
   listDeployments, createDeployment, armDeployment, disarmDeployment,
@@ -308,7 +308,8 @@ function FullMetricsTable({ result }) {
   `;
 }
 
-function Sidebar({ strategies, selectedId, onSelect, loading, error, onRefresh, onNewStrategy }) {
+function Sidebar({ strategies, selectedId, onSelect, loading, error, onRefresh,
+                   onNewStrategy, onToggleFavourite }) {
   return html`
     <aside class="w-72 shrink-0 border-r border-ink-700 bg-ink-900 flex flex-col">
       <div class="px-4 py-3 border-b border-ink-700 flex items-center justify-between">
@@ -337,11 +338,17 @@ function Sidebar({ strategies, selectedId, onSelect, loading, error, onRefresh, 
               ? 'border-l-2 border-accent-500 bg-ink-850'
               : 'border-l-2 border-transparent hover:bg-ink-850';
             return html`
-              <li key=${s.id}>
-                <button onClick=${() => onSelect(s.id)} class="w-full text-left px-4 py-3 ${cls} transition">
+              <li key=${s.id} class="flex items-stretch ${cls} transition">
+                <button onClick=${() => onSelect(s.id)} class="flex-1 min-w-0 text-left px-4 py-3">
                   <div class="text-sm text-mute-100 font-medium truncate">${s.name}</div>
                   ${s.description && html`<div class="text-xs text-mute-400 truncate mt-0.5">${s.description}</div>`}
                   <div class="text-[10px] text-mute-400 num mt-1">${s.id.slice(0,8)}…</div>
+                </button>
+                <button onClick=${() => onToggleFavourite(s)}
+                  class="shrink-0 px-3 text-lg leading-none transition
+                         ${s.favourite ? 'text-yellow-400' : 'text-mute-600 hover:text-mute-300'}"
+                  title=${s.favourite ? 'Remove from favourites' : 'Add to favourites'}>
+                  ${s.favourite ? '★' : '☆'}
                 </button>
               </li>
             `;
@@ -1564,6 +1571,8 @@ function LibraryView({ onOpenRun, onClose }) {
     if (!filtered) return null;
     const arr = [...filtered];
     arr.sort((a, b) => {
+      // Favourites pin to the top regardless of the active sort column.
+      if (!!a.favourite !== !!b.favourite) return a.favourite ? -1 : 1;
       const av = a[sortKey];
       const bv = b[sortKey];
       if (av == null && bv == null) return 0;
@@ -1698,7 +1707,9 @@ function LibraryView({ onOpenRun, onClose }) {
                 <tr key=${r.run_id}
                   onClick=${() => onOpenRun(r.run_id)}
                   class="border-t border-ink-800 hover:bg-ink-850 transition cursor-pointer">
-                  <td class="py-2 px-3 text-mute-100">${r.strategy_name}${modeBadge(r.mode)}</td>
+                  <td class="py-2 px-3 text-mute-100">
+                    ${r.favourite && html`<span class="text-yellow-400 mr-1" title="Favourite">★</span>`}
+                    ${r.strategy_name}${modeBadge(r.mode)}</td>
                   <td class="py-2 px-3 num text-mute-200">${r.ticker}</td>
                   <td class="py-2 px-3 num text-mute-400">${r.timeframe}</td>
                   <td class="py-2 px-3 num text-mute-400 text-xs">${r.start_date.slice(0,10)} → ${r.end_date.slice(0,10)}</td>
@@ -2755,6 +2766,19 @@ function App() {
   };
   useEffect(refreshStrategies, []);
 
+  const onToggleFavourite = async (s) => {
+    // Optimistic flip so the star responds instantly; refresh re-sorts
+    // (favourites pin to the top) and reconciles with the server.
+    setStrategies(prev => prev.map(
+      x => x.id === s.id ? { ...x, favourite: !x.favourite } : x));
+    try {
+      await setStrategyFavourite(s.id, !s.favourite);
+    } catch (err) {
+      setStratError(err.message);
+    }
+    refreshStrategies();
+  };
+
   const selectedStrategy = useMemo(
     () => strategies.find(s => s.id === selectedId) || null,
     [strategies, selectedId]
@@ -3037,7 +3061,7 @@ function App() {
         <${Sidebar}
           strategies=${strategies} selectedId=${selectedId} onSelect=${setSelectedId}
           loading=${stratLoading} error=${stratError} onRefresh=${refreshStrategies}
-          onNewStrategy=${() => setView('author')} />
+          onNewStrategy=${() => setView('author')} onToggleFavourite=${onToggleFavourite} />
 
         <main class="flex-1 min-w-0 overflow-y-auto bg-ink-950">
           ${view === 'author'

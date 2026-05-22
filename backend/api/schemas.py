@@ -50,10 +50,18 @@ class StrategySummary(BaseModel):
     name: str
     description: str
     created_at: str
+    favourite: bool = False
 
 
 class StrategyDetail(StrategySummary):
     code: str
+
+
+class FavouriteRequest(BaseModel):
+    """Body for POST /strategies/{id}/favourite — star or un-star a strategy."""
+    model_config = ConfigDict(extra="forbid")
+
+    favourite: bool
 
 
 class ValidateStrategyRequest(BaseModel):
@@ -81,6 +89,7 @@ class LibraryRunModel(BaseModel):
     end_date: str
     mode: str                          # 'single' | 'sweep' | 'walk_forward'
     created_at: str
+    favourite: bool = False            # the run's strategy is starred
     metrics: dict[str, Any]
     # Per-component normalized scores in [0, 1]. dsr_score is null for now.
     sharpe_score: float

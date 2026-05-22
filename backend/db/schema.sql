@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS strategies (
     description TEXT NOT NULL DEFAULT '',
     code_path   TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    active      INTEGER NOT NULL DEFAULT 1
+    active      INTEGER NOT NULL DEFAULT 1,
+    favourite   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_strategies_active ON strategies(active);
 

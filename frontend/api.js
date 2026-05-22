@@ -37,6 +37,15 @@ export async function getStrategy(strategyId) {
   return jsonOrThrow(res);
 }
 
+export async function setStrategyFavourite(strategyId, favourite) {
+  const res = await fetch(`${API_BASE}/strategies/${encodeURIComponent(strategyId)}/favourite`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ favourite }),
+  });
+  return jsonOrThrow(res);
+}
+
 export async function runBacktest(payload) {
   const res = await fetch(`${API_BASE}/backtest`, {
     method: 'POST',

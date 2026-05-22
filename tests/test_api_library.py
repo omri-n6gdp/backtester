@@ -106,6 +106,21 @@ def test_library_keeps_distinct_param_configs(library_client):
     assert len(runs) == 2
 
 
+def test_library_carries_favourite_flag(library_client):
+    """A run's row reflects whether its strategy is favourited."""
+    client, sid = library_client
+    resp = client.post("/backtest", json={
+        "strategy_id": sid, "ticker": "SPY", "timeframe": "1d",
+        "start": "2010-01-01", "end": "2012-01-01",
+        "params": {"short": 5, "long": 20},
+    })
+    assert resp.status_code == 200, resp.text
+
+    assert client.get("/library").json()["runs"][0]["favourite"] is False
+    client.post(f"/strategies/{sid}/favourite", json={"favourite": True})
+    assert client.get("/library").json()["runs"][0]["favourite"] is True
+
+
 def test_library_keeps_distinct_date_ranges(library_client):
     """Same params but a different window is a distinct config — not deduped."""
     client, sid = library_client

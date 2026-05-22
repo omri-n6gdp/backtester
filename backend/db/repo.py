@@ -34,22 +34,23 @@ def insert_strategy(
 
 
 def list_strategies(conn: sqlite3.Connection, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+    # Favourites sort to the top; newest-first within each group.
     if include_inactive:
         rows = conn.execute(
-            "SELECT id, name, description, code_path, created_at, active "
-            "FROM strategies ORDER BY created_at DESC"
+            "SELECT id, name, description, code_path, created_at, active, favourite "
+            "FROM strategies ORDER BY favourite DESC, created_at DESC"
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT id, name, description, code_path, created_at, active "
-            "FROM strategies WHERE active = 1 ORDER BY created_at DESC"
+            "SELECT id, name, description, code_path, created_at, active, favourite "
+            "FROM strategies WHERE active = 1 ORDER BY favourite DESC, created_at DESC"
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def get_strategy(conn: sqlite3.Connection, strategy_id: str) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT id, name, description, code_path, created_at, active "
+        "SELECT id, name, description, code_path, created_at, active, favourite "
         "FROM strategies WHERE id = ?",
         (strategy_id,),
     ).fetchone()
@@ -60,6 +61,18 @@ def soft_delete_strategy(conn: sqlite3.Connection, strategy_id: str) -> bool:
     cur = conn.execute(
         "UPDATE strategies SET active = 0 WHERE id = ? AND active = 1",
         (strategy_id,),
+    )
+    return cur.rowcount > 0
+
+
+def set_strategy_favourite(
+    conn: sqlite3.Connection, strategy_id: str, favourite: bool
+) -> bool:
+    """Set a strategy's favourite flag. Returns False when no active
+    strategy has that id (soft-deleted strategies cannot be favourited)."""
+    cur = conn.execute(
+        "UPDATE strategies SET favourite = ? WHERE id = ? AND active = 1",
+        (1 if favourite else 0, strategy_id),
     )
     return cur.rowcount > 0
 
@@ -442,6 +455,7 @@ def list_runs_with_metrics(
     rows = conn.execute(
         f"""
         SELECT r.id AS run_id, r.strategy_id, s.name AS strategy_name,
+               s.favourite AS favourite,
                r.ticker, r.timeframe, r.start_date, r.end_date,
                r.params_json, r.created_at,
                m.metrics_json
@@ -474,6 +488,7 @@ def list_runs_with_metrics(
             "run_id": r["run_id"],
             "strategy_id": r["strategy_id"],
             "strategy_name": r["strategy_name"],
+            "favourite": bool(r["favourite"]),
             "ticker": r["ticker"],
             "timeframe": r["timeframe"],
             "start_date": r["start_date"],
