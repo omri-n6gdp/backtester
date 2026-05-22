@@ -11,6 +11,7 @@ DATA_ROOT: Path = Path.home() / ".backtester"
 DB_DIR: Path = DATA_ROOT / "results"
 DB_PATH: Path = DB_DIR / "results.db"
 STRATEGIES_DIR: Path = DATA_ROOT / "strategies"
+LOGS_DIR: Path = DATA_ROOT / "logs"  # Phase 14 — structured logging
 
 
 def ensure_dirs() -> None:

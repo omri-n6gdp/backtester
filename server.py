@@ -11,6 +11,11 @@ import uvicorn
 from fastapi.staticfiles import StaticFiles
 
 from backend.api import create_app
+from backend.logging_config import setup_logging
+
+# Wire the root logger to ~/.backtester/logs/ + console before anything
+# else, so app construction and the lifespan startup are captured too.
+setup_logging()
 
 # --- PHASE4_FRONTEND_MOUNT ---
 # with_scheduler=True: the deployment scheduler starts/stops with the
