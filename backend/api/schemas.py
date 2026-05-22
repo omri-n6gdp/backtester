@@ -341,6 +341,17 @@ class ComboResultModel(BaseModel):
     error: str | None = None
 
 
+class MultiAssetResultModel(BaseModel):
+    """The best-combo params re-tested on one other asset (Phase 15.6).
+
+    `error` is set (and `metrics` left empty) when that ticker could not
+    be fetched or backtested — one bad symbol never fails the sweep.
+    """
+    ticker: str
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+
+
 class SweepRequest(BaseModel):
     """Request body for POST /backtest/sweep."""
     strategy_id: str
@@ -357,6 +368,10 @@ class SweepRequest(BaseModel):
     higher_is_better: bool = True
     heatmaps: list[HeatmapRequestModel] = Field(default_factory=list)
     include_deflated_sharpe: bool = True
+    # Phase 15.6 — Optimise = the full robustness picture. When set, the
+    # best combo also gets a regime check and a re-test on other assets.
+    include_regimes: bool = False
+    multi_asset_tickers: list[str] = Field(default_factory=list)
 
 
 class SweepResponse(BaseModel):
@@ -372,6 +387,9 @@ class SweepResponse(BaseModel):
     param_keys: list[str]
     best_combo_timestamps: list[str] | None = None
     best_combo_equity: list[float | None] | None = None
+    # Phase 15.6 — best-combo robustness extras (None / empty unless requested).
+    regimes: RegimeAnalysisResponseModel | None = None
+    multi_asset: list[MultiAssetResultModel] = Field(default_factory=list)
 
 
 class TradeModel(BaseModel):

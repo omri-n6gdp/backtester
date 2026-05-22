@@ -38,6 +38,7 @@ from backend.api.schemas import (
     KillSwitchResponse,
     MonteCarloConfigModel,
     MonteCarloResponseModel,
+    MultiAssetResultModel,
     OOSResponseModel,
     OrderSentModel,
     ParamStabilityEntry,
@@ -125,6 +126,47 @@ def _axis_to_response(axis: RegimeAxisResult) -> RegimeAxisResponseModel:
             for label, w in axis.windows.items()
         },
     )
+
+
+# ---- Phase 15.6: best-combo robustness extras for the Optimise flow ----
+
+def _regimes_for_result(result: Any, start: date, end: date) -> RegimeAnalysisResponseModel:
+    """Regime conditional analysis (SPY trend + VIX level) for a backtest
+    result. Per-axis fetch errors are isolated and surfaced, never raised."""
+    spy_close, spy_err = _fetch_regime_close("SPY", start, end, warmup_days=400)
+    vix_close, vix_err = _fetch_regime_close("^VIX", start, end, warmup_days=0)
+    regime_result = analyze_regimes(result, spy_close=spy_close, vix_close=vix_close)
+    return RegimeAnalysisResponseModel(
+        spy_trend=_axis_to_response(regime_result.spy_trend) if regime_result.spy_trend else None,
+        vix_level=_axis_to_response(regime_result.vix_level) if regime_result.vix_level else None,
+        spy_trend_error=spy_err or regime_result.spy_trend_error,
+        vix_level_error=vix_err or regime_result.vix_level_error,
+    )
+
+
+def _retest_on_ticker(
+    fn: Any, ticker: str, req: Any, cost_config: Any, params: dict,
+) -> MultiAssetResultModel:
+    """Re-run the best-combo params on another asset. Errors are captured
+    per ticker — one bad symbol never fails the whole sweep."""
+    try:
+        data = get_prices(
+            ticker=ticker, timeframe=req.timeframe,
+            start=_parse_date(req.start), end=_parse_date(req.end),
+        )
+        if data is None or data.empty:
+            return MultiAssetResultModel(ticker=ticker, error="no data for requested window")
+        result = run_backtest(
+            fn, data, params,
+            cost_config=cost_config,
+            starting_capital=req.starting_capital,
+            bars_per_year=req.bars_per_year,
+        )
+        return MultiAssetResultModel(
+            ticker=ticker, metrics=_metrics_to_dict(compute_metrics(result)),
+        )
+    except Exception as e:  # noqa: BLE001 — best-effort; isolate per ticker
+        return MultiAssetResultModel(ticker=ticker, error=f"{type(e).__name__}: {e!s}")
 
 
 router = APIRouter()
@@ -933,6 +975,31 @@ def run_sweep_route(req: SweepRequest) -> SweepResponse:
         )
         repo.insert_metrics(conn, run_id=run_id, metrics_json=json.dumps(best_metrics))
 
+    # 4.5 Phase 15.6 — Optimise = the full robustness picture. On the best
+    # combo only (per-combo would 5x runtime): a regime check and a re-test
+    # of the winning params on other assets. Both are best-effort extras —
+    # a failure here never fails the sweep.
+    regimes_response: RegimeAnalysisResponseModel | None = None
+    multi_asset_results: list[MultiAssetResultModel] = []
+    best = sweep.best_combo
+    if best is not None and best.full_result is not None:
+        if req.include_regimes:
+            try:
+                regimes_response = _regimes_for_result(
+                    best.full_result, _parse_date(req.start), _parse_date(req.end),
+                )
+            except Exception:  # noqa: BLE001 — regime check is a best-effort extra
+                regimes_response = None
+        seen = {req.ticker.strip().upper()}
+        for tk in req.multi_asset_tickers:
+            norm = tk.strip().upper()
+            if not norm or norm in seen:
+                continue  # skip blanks and the asset already swept
+            seen.add(norm)
+            multi_asset_results.append(
+                _retest_on_ticker(fn, norm, req, cost_config, dict(best.params))
+            )
+
     # 5. Marshal and return.
     ds_model: DeflatedSharpeResponseModel | None = None
     if sweep.deflated_sharpe is not None:
@@ -969,6 +1036,8 @@ def run_sweep_route(req: SweepRequest) -> SweepResponse:
         param_keys=sweep.param_keys,
         best_combo_timestamps=best_timestamps,
         best_combo_equity=best_equity_list,
+        regimes=regimes_response,
+        multi_asset=multi_asset_results,
     )
 
 

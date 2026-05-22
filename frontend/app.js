@@ -2601,8 +2601,50 @@ function gridHeatmapAxes(grid, metric) {
   return [{ x_param: varied[0], y_param: varied[1], metric_name: metric }];
 }
 
+// Phase 15.6 — the best-combo params re-tested across other assets.
+function MultiAssetTable({ rows }) {
+  return html`
+    <div class="bg-ink-900 border border-ink-700 rounded p-4">
+      <div class="text-xs uppercase tracking-wider text-mute-400 mb-1">
+        Best params across other assets
+      </div>
+      <div class="text-[11px] text-mute-400 mb-3">
+        The winning parameters re-tested unchanged — do they generalise, or
+        are they fit to this one ticker?
+      </div>
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-ink-700 text-mute-400 text-xs">
+            <th class="text-left py-2 px-3 font-medium">Ticker</th>
+            <th class="text-right py-2 px-3 font-medium">CAGR</th>
+            <th class="text-right py-2 px-3 font-medium">Sharpe</th>
+            <th class="text-right py-2 px-3 font-medium">Max DD</th>
+            <th class="text-right py-2 px-3 font-medium">Calmar</th>
+            <th class="text-right py-2 px-3 font-medium">Trades</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(r => html`
+            <tr key=${r.ticker} class="border-t border-ink-800">
+              <td class="py-2 px-3 num text-mute-100">${r.ticker}</td>
+              ${r.error
+                ? html`<td colspan="5" class="py-2 px-3 text-xs text-danger-500">${r.error}</td>`
+                : html`
+                    <td class="py-2 px-3 text-right num ${(r.metrics?.cagr ?? 0) >= 0 ? 'text-accent-400' : 'text-danger-500'}">
+                      ${fmtPct(r.metrics?.cagr)}</td>
+                    <td class="py-2 px-3 text-right num text-mute-100">${fmtNum(r.metrics?.sharpe, 2)}</td>
+                    <td class="py-2 px-3 text-right num text-danger-500">${fmtPct(r.metrics?.max_drawdown)}</td>
+                    <td class="py-2 px-3 text-right num text-mute-200">${fmtNum(r.metrics?.calmar, 2)}</td>
+                    <td class="py-2 px-3 text-right num text-mute-400">${r.metrics?.n_trades ?? '—'}</td>`}
+            </tr>`)}
+        </tbody>
+      </table>
+    </div>`;
+}
+
 // The result of an optimisation: the best combo's equity curve overlaid
-// on the baseline backtest, plus the heatmap, DSR, and full combo table.
+// on the baseline backtest, plus the heatmap, DSR, full combo table, and
+// (Phase 15.6) the best combo's regime breakdown and multi-asset re-test.
 function OptimiseResult({ baseline, sweep }) {
   const bestCombo = (sweep.best_index !== null && sweep.best_index !== undefined)
     ? sweep.combos.find(c => c.index === sweep.best_index)
@@ -2678,6 +2720,10 @@ function OptimiseResult({ baseline, sweep }) {
 
       ${sweep.deflated_sharpe && html`<${DSRCard} dsr=${sweep.deflated_sharpe} />`}
 
+      ${sweep.regimes && html`<${RegimePanel} regimes=${sweep.regimes} />`}
+
+      ${sweep.multi_asset?.length > 0 && html`<${MultiAssetTable} rows=${sweep.multi_asset} />`}
+
       <div class="bg-ink-900 border border-ink-700 rounded p-4">
         <div class="text-xs uppercase tracking-wider text-mute-400 mb-3">
           All combos · sorted by ${sweep.selection_metric.replace(/_/g, ' ')}
@@ -2701,9 +2747,10 @@ function OptimiseSection({ baseline, sweepCfg, setSweepCfg, sweepResult,
   const panel = html`
     <div class="bg-ink-900 border border-ink-700 rounded p-4 space-y-3">
       <div class="text-xs text-mute-400">
-        Backtests every parameter combination in the grid over the same ticker
-        and window, then keeps the best one by the selection metric. The result
-        is deflated for the number of trials, so a lucky combo can't fool it.
+        Backtests every parameter combination over the same ticker and window
+        and keeps the best one by the selection metric (deflated for the number
+        of trials, so a lucky combo can't fool it). The winner also gets a
+        regime breakdown and a re-test on the other assets below.
       </div>
       <${Field} label="Parameter grid (JSON)">
         <textarea rows="4"
@@ -2723,6 +2770,10 @@ function OptimiseSection({ baseline, sweepCfg, setSweepCfg, sweepResult,
           </select>
         </${Field}>
       </div>
+      <${Field} label="Re-test best params on (comma-separated tickers)">
+        <input class=${ic} value=${sweepCfg.multiAssetTickers}
+          onChange=${e => updS('multiAssetTickers', e.target.value)} />
+      </${Field}>
       <div class="flex gap-2 pt-1">
         <button onClick=${onOptimise} disabled=${optimising}
           class="px-4 py-2 rounded font-semibold text-sm transition
@@ -2802,12 +2853,13 @@ function App() {
     regimes: false,
   });
 
-  // Optimise (Phase 15.5). higher_is_better and the heatmap axes are
+  // Optimise (Phase 15.5/15.6). higher_is_better and the heatmap axes are
   // derived at submit time — the metric implies the direction and the
   // grid keys imply the axes — so they're not stored here.
   const [sweepCfg, setSweepCfg] = useState({
     paramGridJson: '{"short":[10,20,50],"long":[100,150,200]}',
     selectionMetric: 'sharpe',
+    multiAssetTickers: 'SPY, QQQ, AAPL, GLD',
   });
 
   const [costConfig, setCostConfig] = useState({ ...DEFAULT_COST_CONFIG });
@@ -2985,6 +3037,11 @@ function App() {
     setRunError(null);
     setSweepResult(null);
     try {
+      // Phase 15.6 — Optimise is the full robustness picture: the best
+      // combo also gets a regime check and a re-test on other assets.
+      const multiAssetTickers = (sweepCfg.multiAssetTickers || '')
+        .split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+
       const payload = {
         strategy_id: selectedId,
         ticker: config.ticker, timeframe: config.timeframe,
@@ -2994,6 +3051,8 @@ function App() {
         higher_is_better: sweepCfg.selectionMetric !== 'max_drawdown',
         heatmaps: gridHeatmapAxes(paramGrid, sweepCfg.selectionMetric),
         include_deflated_sharpe: true,
+        include_regimes: true,
+        multi_asset_tickers: multiAssetTickers,
         starting_capital: config.starting_capital,
         cost_config: costConfig,
       };

@@ -334,3 +334,42 @@ def test_api_sweep_returns_200_with_correct_structure(sweep_client):
     assert "run_id" in body
     assert isinstance(body["param_keys"], list)
     assert "size" in body["param_keys"]
+
+
+def test_api_sweep_extras_default_off(sweep_client):
+    """Without the Phase 15.6 flags the sweep carries no robustness extras."""
+    client, strategy_id = sweep_client
+    resp = client.post("/backtest/sweep", json={
+        "strategy_id": strategy_id, "ticker": "SPY", "timeframe": "1d",
+        "start": "2015-01-01", "end": "2016-01-01",
+        "param_grid": {"size": [0.3, 0.6]},
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["regimes"] is None
+    assert body["multi_asset"] == []
+
+
+def test_api_sweep_with_regimes_and_multi_asset(sweep_client):
+    """Phase 15.6 — Optimise extras: best-combo regime check + multi-asset re-test."""
+    client, strategy_id = sweep_client
+    resp = client.post("/backtest/sweep", json={
+        "strategy_id": strategy_id, "ticker": "SPY", "timeframe": "1d",
+        "start": "2015-01-01", "end": "2016-01-01",
+        "param_grid": {"size": [0.3, 0.6, 0.9]},
+        "include_regimes": True,
+        # SPY is the swept asset — it must be deduped out of the re-test.
+        "multi_asset_tickers": ["QQQ", "AAPL", "SPY"],
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Regime analysis ran on the best combo.
+    assert body["regimes"] is not None
+
+    # Multi-asset: QQQ and AAPL re-tested; SPY skipped (already swept).
+    tickers = [r["ticker"] for r in body["multi_asset"]]
+    assert tickers == ["QQQ", "AAPL"]
+    for r in body["multi_asset"]:
+        assert r["error"] is None
+        assert "sharpe" in r["metrics"]
