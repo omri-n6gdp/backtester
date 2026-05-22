@@ -13,30 +13,16 @@ from fastapi.staticfiles import StaticFiles
 from backend.api import create_app
 
 # --- PHASE4_FRONTEND_MOUNT ---
-app = create_app()
+# with_scheduler=True: the deployment scheduler starts/stops with the
+# server via the app's lifespan handler. The test suite builds its own
+# app via plain create_app() and so never spins up the scheduler thread.
+app = create_app(with_scheduler=True)
 
 # Serve frontend/ at the root. html=True makes /  serve index.html.
 # Mounted last so API routes (registered inside create_app) take precedence.
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 if FRONTEND_DIR.is_dir():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
-
-
-# --- PHASE11_SCHEDULER ---
-# Start the deployment scheduler when the server boots, stop it on shutdown.
-# This lives in server.py rather than create_app() on purpose: the test
-# suite builds its own app via create_app() and must not spin up a real
-# scheduler thread (or place orders) just by constructing a TestClient.
-@app.on_event("startup")
-def _start_deploy_scheduler() -> None:
-    from backend.deploy import scheduler
-    scheduler.start()
-
-
-@app.on_event("shutdown")
-def _stop_deploy_scheduler() -> None:
-    from backend.deploy import scheduler
-    scheduler.shutdown()
 
 
 if __name__ == "__main__":
