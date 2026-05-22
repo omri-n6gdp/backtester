@@ -215,7 +215,7 @@ function EquityChart({ timestamps, equity, buyHold, title }) {
             <span class="inline-block w-3 h-[2px] bg-accent-500"></span>Strategy</span>
           <span class="flex items-center gap-1">
             <span class="inline-block w-3 border-t border-dashed"
-                  style="border-color:#6b7280"></span>Buy & hold</span>
+                  style=${{ borderColor: '#6b7280' }}></span>Buy & hold</span>
         </div>`}
     </div>`;
 }
@@ -2707,7 +2707,7 @@ function OptimiseResult({ baseline, sweep }) {
             ${overlayRuns.map((r, i) => html`
               <span key=${i} class="flex items-center gap-1">
                 <span class="inline-block w-3 h-[2px]"
-                      style="background:${PIN_COLORS[i % PIN_COLORS.length]}"></span>
+                      style=${{ background: PIN_COLORS[i % PIN_COLORS.length] }}></span>
                 ${r.label}</span>`)}
           </div>
         </div>`}
