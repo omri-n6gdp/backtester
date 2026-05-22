@@ -377,6 +377,9 @@ class BacktestResponse(BaseModel):
     summary: dict[str, Any]            # {cagr, sharpe, max_dd, n_trades, win_rate, final_equity}
     timestamps: list[str]
     equity: list[float | None]
+    # Buy-and-hold baseline aligned bar-for-bar with `timestamps`. None when
+    # it could not be produced (e.g. a stored run whose prices won't refetch).
+    buy_hold_equity: list[float | None] | None = None
     drawdown: list[float | None]
     returns: list[float | None]
     costs: list[float | None]
@@ -495,6 +498,8 @@ class DeploymentTrackingResponse(BaseModel):
     orders: list[OrderSentModel]
     expected_timestamps: list[str]
     expected_equity: list[float | None]
+    # Buy-and-hold baseline over the same window, aligned to expected_timestamps.
+    expected_buy_hold: list[float | None] = Field(default_factory=list)
     expected_positions: list[float | None]
     expected_metrics: dict[str, Any]
     expected_error: str | None = None

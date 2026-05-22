@@ -141,6 +141,22 @@ def _index_to_iso(idx: pd.DatetimeIndex) -> list[str]:
     return [ts.isoformat() for ts in idx]
 
 
+def _buy_hold_equity(close: pd.Series, starting_capital: float) -> list[float | None]:
+    """Buy-and-hold equity curve: the full capital invested at the first
+    bar and held untouched to the end — the honest 'did the strategy beat
+    doing nothing' baseline overlaid on every equity chart.
+
+    `close` must already be aligned to the curve's timestamps; the returned
+    list matches its length one-for-one (NaN -> None) so the frontend can
+    overlay it bar-for-bar.
+    """
+    valid = close.dropna()
+    if valid.empty or float(valid.iloc[0]) == 0.0:
+        return [None] * len(close)
+    base = float(valid.iloc[0])
+    return _series_to_list(starting_capital * close / base)
+
+
 def _trade_to_dict(t: Any) -> dict[str, Any]:
     """Serialize a Trade dataclass (or any object) to a JSON-safe dict."""
     if dataclasses.is_dataclass(t):
@@ -595,6 +611,10 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
         "final_equity": equity_list[-1] if equity_list else None,
     }
 
+    buy_hold_list = _buy_hold_equity(
+        data["close"].reindex(result.equity.index), req.starting_capital,
+    )
+
     return BacktestResponse(
         run_id=run_id,
         strategy_id=req.strategy_id,
@@ -602,6 +622,7 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
         summary=summary,
         timestamps=timestamps,
         equity=equity_list,
+        buy_hold_equity=buy_hold_list,
         drawdown=drawdown_list,
         returns=returns_list,
         costs=costs_list,
@@ -1093,6 +1114,10 @@ def run_event_driven_route(req: EventDrivenBacktestRequest) -> BacktestResponse:
         "final_equity": equity_list[-1] if equity_list else None,
     }
 
+    buy_hold_list = _buy_hold_equity(
+        data["close"].reindex(result.equity.index), req.starting_capital,
+    )
+
     return BacktestResponse(
         run_id=run_id,
         strategy_id=req.strategy_id,
@@ -1100,6 +1125,7 @@ def run_event_driven_route(req: EventDrivenBacktestRequest) -> BacktestResponse:
         summary=summary,
         timestamps=timestamps,
         equity=equity_list,
+        buy_hold_equity=buy_hold_list,
         drawdown=drawdown_list,
         returns=returns_list,
         costs=costs_list,
@@ -1276,6 +1302,23 @@ def get_run_route(run_id: str) -> BacktestResponse:
         "win_rate": metrics.get("win_rate"),
         "final_equity": equity_list[-1] if equity_list else None,
     }
+
+    # Buy-and-hold baseline — refetch prices (cached Parquet, fast) and align
+    # to the stored timestamps. Best-effort: a run whose window no longer
+    # refetches simply renders without the overlay.
+    buy_hold_list: list[float | None] | None = None
+    try:
+        bh_data = get_prices(
+            ticker=run_row["ticker"], timeframe=run_row["timeframe"],
+            start=_parse_date(run_row["start_date"]),
+            end=_parse_date(run_row["end_date"]),
+        )
+        target_index = pd.to_datetime(curves["timestamps"], utc=True)
+        close_aligned = bh_data["close"].reindex(target_index)
+        buy_hold_list = _buy_hold_equity(close_aligned, run_row["starting_capital"])
+    except Exception:  # noqa: BLE001 — the overlay is best-effort
+        buy_hold_list = None
+
     return BacktestResponse(
         run_id=run_row["id"],
         strategy_id=run_row["strategy_id"],
@@ -1283,6 +1326,7 @@ def get_run_route(run_id: str) -> BacktestResponse:
         summary=summary,
         timestamps=curves["timestamps"],
         equity=equity_list,
+        buy_hold_equity=buy_hold_list,
         drawdown=curves["drawdown"],
         returns=curves["returns"],
         costs=curves["costs"],
@@ -1514,6 +1558,7 @@ def deployment_tracking_route(deployment_id: str) -> DeploymentTrackingResponse:
 
     expected_timestamps: list[str] = []
     expected_equity: list[float | None] = []
+    expected_buy_hold: list[float | None] = []
     expected_positions: list[float | None] = []
     expected_metrics: dict[str, Any] = {}
     expected_error: str | None = None
@@ -1546,6 +1591,9 @@ def deployment_tracking_route(deployment_id: str) -> DeploymentTrackingResponse:
         )
         expected_timestamps = _index_to_iso(result.equity.index)
         expected_equity = _series_to_list(result.equity)
+        expected_buy_hold = _buy_hold_equity(
+            data["close"].reindex(result.equity.index), row["deployment_capital"],
+        )
         expected_positions = _series_to_list(result.positions)
         expected_metrics = _metrics_to_dict(compute_metrics(result))
     except Exception as e:  # noqa: BLE001 — the expected curve is best-effort
@@ -1556,6 +1604,7 @@ def deployment_tracking_route(deployment_id: str) -> DeploymentTrackingResponse:
         orders=[_order_to_model(r) for r in order_rows],
         expected_timestamps=expected_timestamps,
         expected_equity=expected_equity,
+        expected_buy_hold=expected_buy_hold,
         expected_positions=expected_positions,
         expected_metrics=expected_metrics,
         expected_error=expected_error,

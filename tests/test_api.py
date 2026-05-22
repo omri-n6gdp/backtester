@@ -159,6 +159,51 @@ def test_backtest_happy(client: TestClient) -> None:
     assert body["equity"][-1] is not None
 
 
+def test_backtest_includes_buy_hold_baseline(client: TestClient) -> None:
+    sid = client.post("/strategies", json={
+        "name": "SMA", "description": "", "code": SAMPLE_STRATEGY,
+    }).json()["strategy_id"]
+
+    capital = 50_000.0
+    body = client.post("/backtest", json={
+        "strategy_id": sid, "ticker": "SPY", "timeframe": "1d",
+        "start": "2024-01-01", "end": "2024-12-31",
+        "params": {"short": 5, "long": 20},
+        "starting_capital": capital,
+    }).json()
+
+    bh = body["buy_hold_equity"]
+    assert bh is not None
+    # Aligned bar-for-bar with the equity / timestamp curves.
+    assert len(bh) == len(body["equity"]) == len(body["timestamps"])
+    # The full capital is invested at the first bar.
+    assert bh[0] == pytest.approx(capital)
+
+    # Buy & hold == capital * close_t / close_0 — cross-check against /prices.
+    closes = client.get("/prices", params={
+        "ticker": "SPY", "timeframe": "1d",
+        "start": "2024-01-01", "end": "2024-12-31",
+    }).json()["close"]
+    assert bh[-1] == pytest.approx(capital * closes[-1] / closes[0])
+
+
+def test_get_run_includes_buy_hold_baseline(client: TestClient) -> None:
+    """A stored run refetches prices to rebuild the buy & hold overlay."""
+    sid = client.post("/strategies", json={
+        "name": "SMA", "description": "", "code": SAMPLE_STRATEGY,
+    }).json()["strategy_id"]
+    run_id = client.post("/backtest", json={
+        "strategy_id": sid, "ticker": "SPY", "timeframe": "1d",
+        "start": "2024-01-01", "end": "2024-12-31",
+        "params": {"short": 5, "long": 20},
+    }).json()["run_id"]
+
+    body = client.get(f"/runs/{run_id}").json()
+    bh = body["buy_hold_equity"]
+    assert bh is not None
+    assert len(bh) == len(body["timestamps"])
+
+
 def test_backtest_unknown_strategy_404(client: TestClient) -> None:
     r = client.post("/backtest", json={
         "strategy_id": "does-not-exist",

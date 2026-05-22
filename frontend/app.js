@@ -123,10 +123,29 @@ function fmtMetricVal(k, v) {
 
 // ---- EquityChart ---------------------------------------------------
 
-function EquityChart({ timestamps, equity, title }) {
+// Build a {time, value} series from a curve aligned to `timestamps`,
+// dropping nulls/NaNs and enforcing strictly-increasing time (lightweight-
+// charts rejects duplicate/decreasing timestamps).
+function curveToChartData(timestamps, values) {
+  const data = [];
+  if (!timestamps || !values) return data;
+  let lastTime = -1;
+  for (let i = 0; i < timestamps.length; i++) {
+    const v = values[i];
+    if (v === null || v === undefined || Number.isNaN(v)) continue;
+    const t = isoToUnixSeconds(timestamps[i]);
+    if (t <= lastTime) continue;
+    lastTime = t;
+    data.push({ time: t, value: Number(v) });
+  }
+  return data;
+}
+
+function EquityChart({ timestamps, equity, buyHold, title }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
+  const bhSeriesRef = useRef(null);
 
   useEffect(() => {
     if (!containerRef.current || !LWC) return;
@@ -145,6 +164,16 @@ function EquityChart({ timestamps, equity, title }) {
       timeScale: { borderColor: '#222732', timeVisible: false, secondsVisible: false },
       crosshair: { mode: 1 },
     });
+    // Buy & hold drawn first so the strategy area sits on top of it.
+    const bhSeries = chart.addSeries(LWC.LineSeries, {
+      color: '#6b7280',
+      lineWidth: 1,
+      lineStyle: 2,  // dashed
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      priceFormat: { type: 'price', precision: 0, minMove: 1 },
+    });
     const series = chart.addSeries(LWC.AreaSeries, {
       lineColor: '#22c55e',
       topColor: 'rgba(34,197,94,0.28)',
@@ -154,26 +183,41 @@ function EquityChart({ timestamps, equity, title }) {
     });
     chartRef.current = chart;
     seriesRef.current = series;
-    return () => { chart.remove(); chartRef.current = null; seriesRef.current = null; };
+    bhSeriesRef.current = bhSeries;
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+      bhSeriesRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
     if (!seriesRef.current || !timestamps || !equity) return;
-    const data = [];
-    let lastTime = -1;
-    for (let i = 0; i < timestamps.length; i++) {
-      const v = equity[i];
-      if (v === null || v === undefined || Number.isNaN(v)) continue;
-      const t = isoToUnixSeconds(timestamps[i]);
-      if (t <= lastTime) continue;
-      lastTime = t;
-      data.push({ time: t, value: Number(v) });
-    }
-    seriesRef.current.setData(data);
+    seriesRef.current.setData(curveToChartData(timestamps, equity));
     chartRef.current && chartRef.current.timeScale().fitContent();
   }, [timestamps, equity]);
 
-  return html`<div ref=${containerRef} class="w-full h-full"></div>`;
+  useEffect(() => {
+    if (!bhSeriesRef.current) return;
+    bhSeriesRef.current.setData(curveToChartData(timestamps, buyHold));
+  }, [timestamps, buyHold]);
+
+  const hasBuyHold = !!(buyHold && buyHold.some(v => v !== null && v !== undefined));
+
+  return html`
+    <div class="relative w-full h-full">
+      <div ref=${containerRef} class="w-full h-full"></div>
+      ${hasBuyHold && html`
+        <div class="absolute top-1.5 left-2 flex gap-3 text-[10px] text-slate-400
+                    pointer-events-none z-10">
+          <span class="flex items-center gap-1">
+            <span class="inline-block w-3 h-[2px] bg-accent-500"></span>Strategy</span>
+          <span class="flex items-center gap-1">
+            <span class="inline-block w-3 border-t border-dashed"
+                  style="border-color:#6b7280"></span>Buy & hold</span>
+        </div>`}
+    </div>`;
 }
 
 // ---- UI primitives -------------------------------------------------
@@ -2331,7 +2375,8 @@ function DeploymentTrackingPanel({ deploymentId, strategies, onBack }) {
                 </div>`
               : html`
                 <div class="h-[300px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
-                  <${EquityChart} timestamps=${data.expected_timestamps} equity=${data.expected_equity} />
+                  <${EquityChart} timestamps=${data.expected_timestamps} equity=${data.expected_equity}
+                                  buyHold=${data.expected_buy_hold} />
                 </div>
                 <div class="grid grid-cols-3 gap-3 mt-3">
                   <${MetricCard} label="Expected CAGR" value=${fmtPct(m.cagr)}
@@ -2843,7 +2888,8 @@ function App() {
           </div>
         </div>
         <div class="mt-3 h-[340px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
-          <${EquityChart} timestamps=${result.timestamps} equity=${result.equity} />
+          <${EquityChart} timestamps=${result.timestamps} equity=${result.equity}
+                          buyHold=${result.buy_hold_equity} />
         </div>
       </div>
 
