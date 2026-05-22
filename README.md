@@ -103,6 +103,23 @@ so it picks up the new code.
 Deleting `~/.backtester/` resets everything; the price cache rebuilds
 itself on the next run.
 
+## Backing up your data
+
+Everything that matters lives in `~/.backtester/` — your saved strategies,
+your run history, the price cache. The repo itself is replaceable (a `git
+clone` rebuilds it); your data is not.
+
+On macOS the easiest backup is **Time Machine**: open System Settings →
+General → Time Machine, plug in an external drive, and leave it on. Time
+Machine includes your whole home folder (so `~/.backtester/` is covered)
+unless you've explicitly excluded it.
+
+If you prefer a one-shot copy, the whole directory is small and portable:
+
+```bash
+cp -R ~/.backtester ~/backtester-backup-$(date +%Y-%m-%d)
+```
+
 ## Running the tests
 
 ```bash

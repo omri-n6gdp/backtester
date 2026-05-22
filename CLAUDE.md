@@ -483,7 +483,7 @@ A continuous grab-bag. Done so far:
 - **✅ STRATEGIES.md + DEPLOYMENT.md** (commit `f060e41`) — strategy-authoring contract (with working SMA/RSI examples, validator rules, look-ahead guard) and the T212 Demo deployment walkthrough (ARM token, instrument codes, safeguards, gated-live note).
 - **✅ Cache compaction script** (commit `61cf107`) — `scripts/compact_cache.py` rewrites every Parquet via the data layer's own `_read_cache`/`_write_cache_atomic` (atomic rename, sort+dedupe) and runs SQLite `VACUUM`. `--dry-run` reports without changing anything. Idempotent.
 
-Still to do: error toast UI (frontend); Time Machine backups note; the deployment-polish items below.
+Still to do: error toast UI (frontend); the deployment-polish items below. **✅ Time Machine backups note** — covered by the README's "Backing up your data" section.
 
 **Deployment-polish items (moved from 12.8, 2026-05-22):** per-run history (one row per deployment run + outcome, shown in Tracking); rebase Tracking's expected curve to the deployment's live period; order/error notifications when a deployment trades or errors; schedule presets ("after US close") instead of raw cron; account-cash precheck before sizing.
 
