@@ -651,13 +651,12 @@ function ComboTable({ combos, bestIndex, selectionMetric, higherIsBetter }) {
 // ---- RightRail (mode-aware) ----------------------------------------
 
 function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
-                     sweepCfg, setSweepCfg, costConfig, setCostConfig,
+                     costConfig, setCostConfig,
                      eventDriven, setEventDriven,
-                     runMode, setRunMode, onRun, running }) {
+                     onRun, running }) {
   const disabled = !selectedId || running;
   const upd = (k, v) => setConfig(c => ({ ...c, [k]: v }));
   const updR = (k, v) => setRobustness(r => ({ ...r, [k]: v }));
-  const updS = (k, v) => setSweepCfg(s => ({ ...s, [k]: v }));
   const updC = (k, v) => setCostConfig(c => ({ ...c, [k]: v }));
   const updED = (k, v) => setEventDriven(s => ({ ...s, [k]: v }));
   const resetCosts = () => setCostConfig(DEFAULT_COST_CONFIG);
@@ -666,21 +665,6 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
 
   return html`
     <aside class="w-80 shrink-0 border-l border-ink-700 bg-ink-900 flex flex-col">
-      <div class="px-4 py-3 border-b border-ink-700">
-        <div class="text-[10px] uppercase tracking-wider text-mute-400 mb-2">Mode</div>
-        <div class="flex rounded overflow-hidden border border-ink-700">
-          ${['backtest','sweep'].map(mode => html`
-            <button key=${mode} onClick=${() => setRunMode(mode)}
-              class="flex-1 py-1.5 text-xs font-semibold transition
-                     ${runMode === mode
-                       ? 'bg-accent-600 text-white'
-                       : 'bg-ink-850 text-mute-300 hover:bg-ink-800'}">
-              ${mode === 'backtest' ? 'Backtest' : 'Sweep'}
-            </button>
-          `)}
-        </div>
-      </div>
-
       <div class="p-4 space-y-4 flex-1 overflow-y-auto text-sm">
 
         <!-- Shared: ticker / timeframe / dates / capital -->
@@ -711,8 +695,7 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
             onChange=${e => upd('starting_capital', Number(e.target.value))} />
         </${Field}>
 
-        ${runMode === 'backtest' && html`
-          <${Field} label="Strategy params (JSON)">
+        <${Field} label="Strategy params (JSON)">
             <textarea rows="2" class="w-full bg-ink-850 border border-ink-700 rounded px-2 py-1.5 text-xs num text-mute-100 focus:outline-none focus:border-accent-500 font-mono resize-none"
               value=${config.paramsJson ?? '{}'}
               onChange=${e => upd('paramsJson', e.target.value)} />
@@ -806,59 +789,6 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
               </div>
             `}
           </div>
-        `}
-
-        ${runMode === 'sweep' && html`
-          <${Field} label="Param grid (JSON)">
-            <textarea rows="4"
-              class="w-full bg-ink-850 border border-ink-700 rounded px-2 py-1.5 text-xs num text-mute-100 focus:outline-none focus:border-accent-500 font-mono resize-none"
-              value=${sweepCfg.paramGridJson}
-              onChange=${e => updS('paramGridJson', e.target.value)} />
-          </${Field}>
-
-          <${Field} label="Selection metric">
-            <select class=${ic} value=${sweepCfg.selectionMetric}
-              onChange=${e => updS('selectionMetric', e.target.value)}>
-              <option value="sharpe">Sharpe</option>
-              <option value="cagr">CAGR</option>
-              <option value="calmar">Calmar</option>
-              <option value="sortino">Sortino</option>
-              <option value="max_drawdown">Max drawdown (lower=better)</option>
-            </select>
-          </${Field}>
-
-          <div class="flex items-center gap-2">
-            <input type="checkbox" id="hib-cb" class="accent-accent-500"
-              checked=${sweepCfg.higherIsBetter}
-              onChange=${e => updS('higherIsBetter', e.target.checked)} />
-            <label for="hib-cb" class="text-xs text-mute-200">Higher metric = better</label>
-          </div>
-
-          <div class="pt-1 space-y-2">
-            <div class="text-[10px] uppercase tracking-wider text-mute-400">Heatmap axes</div>
-            <div class="grid grid-cols-3 gap-2">
-              <${Field} label="X param">
-                <input class="w-full bg-ink-850 border border-ink-700 rounded px-1.5 py-1 text-xs num text-mute-100 focus:outline-none focus:border-accent-500"
-                  value=${sweepCfg.xParam} onChange=${e => updS('xParam', e.target.value)} />
-              </${Field}>
-              <${Field} label="Y param">
-                <input class="w-full bg-ink-850 border border-ink-700 rounded px-1.5 py-1 text-xs num text-mute-100 focus:outline-none focus:border-accent-500"
-                  value=${sweepCfg.yParam} onChange=${e => updS('yParam', e.target.value)} />
-              </${Field}>
-              <${Field} label="Metric">
-                <input class="w-full bg-ink-850 border border-ink-700 rounded px-1.5 py-1 text-xs num text-mute-100 focus:outline-none focus:border-accent-500"
-                  value=${sweepCfg.hmMetric} onChange=${e => updS('hmMetric', e.target.value)} />
-              </${Field}>
-            </div>
-          </div>
-
-          <div class="flex items-center gap-2">
-            <input type="checkbox" id="dsr-sweep-cb" class="accent-accent-500"
-              checked=${sweepCfg.includeDsr}
-              onChange=${e => updS('includeDsr', e.target.checked)} />
-            <label for="dsr-sweep-cb" class="text-xs text-mute-200">Deflated Sharpe (DSR)</label>
-          </div>
-        `}
 
         <!-- Cost config editor -->
         <div class="pt-1">
@@ -921,9 +851,7 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
                  ${disabled
                    ? 'bg-ink-700 text-mute-400 cursor-not-allowed'
                    : 'bg-accent-500 hover:bg-accent-400 text-ink-950'}">
-          ${running
-            ? (runMode === 'sweep' ? 'Sweeping…' : 'Running…')
-            : (runMode === 'sweep' ? 'Run Sweep' : 'Run Backtest')}
+          ${running ? 'Running…' : 'Run Backtest'}
         </button>
         ${!selectedId && html`<div class="text-xs text-mute-400 mt-2 text-center">Pick a strategy on the left.</div>`}
       </div>
@@ -2660,6 +2588,193 @@ function DeployView({ strategies, onClose }) {
 }
 
 
+// ---- Optimise flow (Phase 15.5) ------------------------------------
+
+// Heatmap axes for an optimise sweep: the first two grid keys that vary
+// (a list of >1 value). Phase 15.1 — previously hardcoded to SMA
+// short/long, which made the sweep 500 for any other strategy.
+function gridHeatmapAxes(grid, metric) {
+  if (!grid || Array.isArray(grid) || typeof grid !== 'object') return [];
+  const varied = Object.keys(grid).filter(
+    k => Array.isArray(grid[k]) && grid[k].length > 1);
+  if (varied.length < 2) return [];
+  return [{ x_param: varied[0], y_param: varied[1], metric_name: metric }];
+}
+
+// The result of an optimisation: the best combo's equity curve overlaid
+// on the baseline backtest, plus the heatmap, DSR, and full combo table.
+function OptimiseResult({ baseline, sweep }) {
+  const bestCombo = (sweep.best_index !== null && sweep.best_index !== undefined)
+    ? sweep.combos.find(c => c.index === sweep.best_index)
+    : null;
+
+  // Memoized so MultiEquityChart's [runs] effect doesn't remount the chart
+  // on every unrelated App re-render.
+  const overlayRuns = useMemo(() => {
+    const runs = [];
+    if (baseline?.timestamps && baseline?.equity) {
+      runs.push({
+        label: 'Baseline (current params)',
+        timestamps: baseline.timestamps, equity: baseline.equity,
+      });
+    }
+    if (sweep.best_combo_timestamps && sweep.best_combo_equity) {
+      runs.push({
+        label: 'Optimised (best combo)',
+        timestamps: sweep.best_combo_timestamps, equity: sweep.best_combo_equity,
+      });
+    }
+    return runs;
+  }, [baseline, sweep]);
+
+  const lastValid = (arr) => {
+    if (!arr) return null;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (arr[i] !== null && arr[i] !== undefined && !Number.isNaN(arr[i])) return arr[i];
+    }
+    return null;
+  };
+  const baseFinal = lastValid(baseline?.equity);
+  const optFinal = lastValid(sweep.best_combo_equity);
+  const delta = (baseFinal && optFinal) ? (optFinal / baseFinal - 1) : null;
+
+  return html`
+    <div class="space-y-5">
+      <div class="text-sm text-mute-200">
+        ${sweep.n_combinations} combinations tested.
+        ${bestCombo
+          ? html` Best: <span class="num text-accent-400">${
+              Object.entries(bestCombo.params).map(([k, v]) => `${k}=${v}`).join(', ')
+            }</span>`
+          : ' No best combo found.'}
+        ${delta !== null && html`
+          <span class="num ${delta >= 0 ? 'text-accent-400' : 'text-danger-500'}">
+            · final equity ${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(1)}% vs baseline
+          </span>`}
+      </div>
+
+      ${overlayRuns.length > 0 && html`
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">
+            Optimised vs baseline equity
+          </div>
+          <div class="h-[300px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
+            <${MultiEquityChart} runs=${overlayRuns} />
+          </div>
+          <div class="flex gap-4 mt-2 text-[11px] text-mute-300">
+            ${overlayRuns.map((r, i) => html`
+              <span key=${i} class="flex items-center gap-1">
+                <span class="inline-block w-3 h-[2px]"
+                      style="background:${PIN_COLORS[i % PIN_COLORS.length]}"></span>
+                ${r.label}</span>`)}
+          </div>
+        </div>`}
+
+      ${sweep.heatmaps?.length > 0 && html`
+        <div class="bg-ink-900 border border-ink-700 rounded p-4">
+          <div class="text-xs uppercase tracking-wider text-mute-400 mb-4">Parameter heatmap</div>
+          ${sweep.heatmaps.map((hm, i) => html`<div key=${i}><${HeatmapGrid} heatmap=${hm} /></div>`)}
+        </div>`}
+
+      ${sweep.deflated_sharpe && html`<${DSRCard} dsr=${sweep.deflated_sharpe} />`}
+
+      <div class="bg-ink-900 border border-ink-700 rounded p-4">
+        <div class="text-xs uppercase tracking-wider text-mute-400 mb-3">
+          All combos · sorted by ${sweep.selection_metric.replace(/_/g, ' ')}
+        </div>
+        <${ComboTable}
+          combos=${sweep.combos}
+          bestIndex=${sweep.best_index}
+          selectionMetric=${sweep.selection_metric}
+          higherIsBetter=${sweep.higher_is_better} />
+      </div>
+    </div>`;
+}
+
+// The Optimise section that hangs below a backtest result: an Optimise
+// button, a collapsible param-grid panel, and (once run) the results.
+function OptimiseSection({ baseline, sweepCfg, setSweepCfg, sweepResult,
+                           optimising, show, onShow, onHide, onOptimise, error }) {
+  const updS = (k, v) => setSweepCfg(s => ({ ...s, [k]: v }));
+  const ic = inputCls();
+
+  const panel = html`
+    <div class="bg-ink-900 border border-ink-700 rounded p-4 space-y-3">
+      <div class="text-xs text-mute-400">
+        Backtests every parameter combination in the grid over the same ticker
+        and window, then keeps the best one by the selection metric. The result
+        is deflated for the number of trials, so a lucky combo can't fool it.
+      </div>
+      <${Field} label="Parameter grid (JSON)">
+        <textarea rows="4"
+          class="w-full bg-ink-850 border border-ink-700 rounded px-2 py-1.5 text-xs num text-mute-100 focus:outline-none focus:border-accent-500 font-mono resize-none"
+          value=${sweepCfg.paramGridJson}
+          onChange=${e => updS('paramGridJson', e.target.value)} />
+      </${Field}>
+      <div class="w-48">
+        <${Field} label="Selection metric">
+          <select class=${ic} value=${sweepCfg.selectionMetric}
+            onChange=${e => updS('selectionMetric', e.target.value)}>
+            <option value="sharpe">Sharpe</option>
+            <option value="cagr">CAGR</option>
+            <option value="calmar">Calmar</option>
+            <option value="sortino">Sortino</option>
+            <option value="max_drawdown">Max drawdown</option>
+          </select>
+        </${Field}>
+      </div>
+      <div class="flex gap-2 pt-1">
+        <button onClick=${onOptimise} disabled=${optimising}
+          class="px-4 py-2 rounded font-semibold text-sm transition
+                 ${optimising
+                   ? 'bg-ink-700 text-mute-400 cursor-not-allowed'
+                   : 'bg-accent-500 hover:bg-accent-400 text-ink-950'}">
+          ${optimising ? 'Optimising…' : 'Run optimisation'}
+        </button>
+        <button onClick=${onHide} disabled=${optimising}
+          class="px-4 py-2 rounded text-sm text-mute-300 hover:text-mute-100 transition">
+          Cancel
+        </button>
+      </div>
+    </div>`;
+
+  return html`
+    <div class="space-y-4">
+      <div class="flex items-baseline justify-between">
+        <div class="text-xs uppercase tracking-wider text-mute-400">Optimise</div>
+        ${(sweepResult || show) && html`
+          <button onClick=${show ? onHide : onShow}
+            class="text-xs text-mute-300 hover:text-mute-100 transition">
+            ${show ? 'hide settings' : 'adjust & re-run'}
+          </button>`}
+      </div>
+
+      ${!show && !sweepResult && html`
+        <div class="space-y-2">
+          <button onClick=${onShow}
+            class="px-4 py-2 rounded font-semibold text-sm bg-accent-600 hover:bg-accent-500 text-white transition">
+            ⚙ Optimise this strategy
+          </button>
+          <div class="text-xs text-mute-400">
+            Sweep a grid of parameters and see if a better combination beats the run above.
+          </div>
+        </div>`}
+
+      ${show && panel}
+
+      ${error && !optimising && html`
+        <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
+          ${error}
+        </div>`}
+
+      ${optimising && !sweepResult && html`
+        <div class="text-sm text-mute-400">Optimising — backtesting every combination…</div>`}
+
+      ${sweepResult && html`<${OptimiseResult} baseline=${baseline} sweep=${sweepResult} />`}
+    </div>`;
+}
+
+
 // ---- App -----------------------------------------------------------
 
 function App() {
@@ -2672,8 +2787,6 @@ function App() {
 
   // Top-level view: 'run' (backtest/sweep) or 'author' (new strategy).
   const [view, setView] = useState('run');
-
-  const [runMode, setRunMode] = useState('backtest');
 
   const [config, setConfig] = useState({
     ticker: 'SPY', timeframe: '1d',
@@ -2689,14 +2802,12 @@ function App() {
     regimes: false,
   });
 
+  // Optimise (Phase 15.5). higher_is_better and the heatmap axes are
+  // derived at submit time — the metric implies the direction and the
+  // grid keys imply the axes — so they're not stored here.
   const [sweepCfg, setSweepCfg] = useState({
     paramGridJson: '{"short":[10,20,50],"long":[100,150,200]}',
     selectionMetric: 'sharpe',
-    higherIsBetter: true,
-    xParam: 'short',
-    yParam: 'long',
-    hmMetric: 'sharpe',
-    includeDsr: true,
   });
 
   const [costConfig, setCostConfig] = useState({ ...DEFAULT_COST_CONFIG });
@@ -2718,7 +2829,14 @@ function App() {
   const runLockRef = useRef(false);
   const [runError, setRunError] = useState(null);
   const [result, setResult] = useState(null);
+
+  // Optimise state. sweepResult is the sweep output shown below the
+  // baseline backtest; showOptimise toggles the param-grid panel;
+  // optimiseLockRef is the same synchronous double-submit guard as runLockRef.
   const [sweepResult, setSweepResult] = useState(null);
+  const [showOptimise, setShowOptimise] = useState(false);
+  const [optimising, setOptimising] = useState(false);
+  const optimiseLockRef = useRef(false);
 
   // Pinned runs for comparison mode. Each pin holds the minimum payload
   // needed to overlay: timestamps, equity, metrics, and a display label.
@@ -2789,41 +2907,29 @@ function App() {
     runLockRef.current = true;
     setRunning(true);
     setRunError(null);
+    setResult(null);
+    // A fresh backtest invalidates any optimisation built from the old run.
+    setSweepResult(null);
+    setShowOptimise(false);
+    try {
+      let params = {};
+      try { params = JSON.parse(config.paramsJson || '{}'); } catch { /* use empty */ }
 
-    if (runMode === 'backtest') {
-      setResult(null);
-      try {
-        let params = {};
-        try { params = JSON.parse(config.paramsJson || '{}'); } catch { /* use empty */ }
-
-        // Event-driven mode: hits a separate route. Robustness analyses
-        // (OOS / MC / DSR / regimes) aren't wired into it.
-        if (eventDriven.enabled) {
-          const stopPct = (v) => {
-            const s = String(v ?? '').trim();
-            if (s === '') return null;
-            const n = Number(s);
-            if (!Number.isFinite(n) || n < 0) return null;
-            return n / 100.0;
-          };
-          const stop_config = {
-            stop_loss_pct: stopPct(eventDriven.stop_loss_pct),
-            take_profit_pct: stopPct(eventDriven.take_profit_pct),
-            trailing_stop_pct: stopPct(eventDriven.trailing_stop_pct),
-          };
-          const payload = {
-            strategy_id: selectedId,
-            ticker: config.ticker, timeframe: config.timeframe,
-            start: config.start, end: config.end,
-            params,
-            starting_capital: config.starting_capital,
-            cost_config: costConfig,
-            stop_config,
-          };
-          setResult(await runEventDriven(payload));
-          return; // finally below clears the running flag.
-        }
-
+      // Event-driven mode: hits a separate route. Robustness analyses
+      // (OOS / MC / DSR / regimes) aren't wired into it.
+      if (eventDriven.enabled) {
+        const stopPct = (v) => {
+          const s = String(v ?? '').trim();
+          if (s === '') return null;
+          const n = Number(s);
+          if (!Number.isFinite(n) || n < 0) return null;
+          return n / 100.0;
+        };
+        const stop_config = {
+          stop_loss_pct: stopPct(eventDriven.stop_loss_pct),
+          take_profit_pct: stopPct(eventDriven.take_profit_pct),
+          trailing_stop_pct: stopPct(eventDriven.trailing_stop_pct),
+        };
         const payload = {
           strategy_id: selectedId,
           ticker: config.ticker, timeframe: config.timeframe,
@@ -2831,63 +2937,79 @@ function App() {
           params,
           starting_capital: config.starting_capital,
           cost_config: costConfig,
+          stop_config,
         };
-        if (robustness.oos) payload.oos_split = robustness.oosSplit;
-        if (robustness.dsr && robustness.nTrials) payload.n_trials = parseInt(robustness.nTrials, 10);
-        if (robustness.monteCarlo) payload.monte_carlo = { n_iterations: robustness.nShuffles };
-        if (robustness.regimes) payload.include_regimes = true;
-
-        setResult(await runBacktest(payload));
-      } catch (err) {
-        setRunError(err.message);
-      } finally {
-        setRunning(false);
-        runLockRef.current = false;
-      }
-    } else {
-      setSweepResult(null);
-      let paramGrid;
-      try {
-        paramGrid = JSON.parse(sweepCfg.paramGridJson);
-      } catch {
-        setRunError('Param grid JSON is invalid — check the syntax and try again.');
-        setRunning(false);
-        runLockRef.current = false;
-        return;
+        setResult(await runEventDriven(payload));
+        return; // finally below clears the running flag.
       }
 
-      try {
-        const heatmaps =
-          sweepCfg.xParam && sweepCfg.yParam && sweepCfg.hmMetric
-            ? [{ x_param: sweepCfg.xParam, y_param: sweepCfg.yParam, metric_name: sweepCfg.hmMetric }]
-            : [];
+      const payload = {
+        strategy_id: selectedId,
+        ticker: config.ticker, timeframe: config.timeframe,
+        start: config.start, end: config.end,
+        params,
+        starting_capital: config.starting_capital,
+        cost_config: costConfig,
+      };
+      if (robustness.oos) payload.oos_split = robustness.oosSplit;
+      if (robustness.dsr && robustness.nTrials) payload.n_trials = parseInt(robustness.nTrials, 10);
+      if (robustness.monteCarlo) payload.monte_carlo = { n_iterations: robustness.nShuffles };
+      if (robustness.regimes) payload.include_regimes = true;
 
-        const payload = {
-          strategy_id: selectedId,
-          ticker: config.ticker, timeframe: config.timeframe,
-          start: config.start, end: config.end,
-          param_grid: paramGrid,
-          selection_metric: sweepCfg.selectionMetric,
-          higher_is_better: sweepCfg.higherIsBetter,
-          heatmaps,
-          include_deflated_sharpe: sweepCfg.includeDsr,
-          starting_capital: config.starting_capital,
-          cost_config: costConfig,
-        };
+      setResult(await runBacktest(payload));
+    } catch (err) {
+      setRunError(err.message);
+    } finally {
+      setRunning(false);
+      runLockRef.current = false;
+    }
+  };
 
-        setSweepResult(await runSweep(payload));
-      } catch (err) {
-        setRunError(err.message);
-      } finally {
-        setRunning(false);
-        runLockRef.current = false;
-      }
+  // Optimise: sweep the param grid for the current strategy/ticker/window
+  // and surface the best combo alongside the baseline backtest above.
+  // Anti-overfitting is non-negotiable, so DSR is always requested; the
+  // metric implies the direction and the grid keys imply the heatmap axes.
+  const onOptimise = async () => {
+    if (!selectedId || optimiseLockRef.current) return;
+
+    let paramGrid;
+    try {
+      paramGrid = JSON.parse(sweepCfg.paramGridJson);
+    } catch {
+      setRunError('Param grid JSON is invalid — check the syntax and try again.');
+      return;
+    }
+
+    optimiseLockRef.current = true;
+    setOptimising(true);
+    setRunError(null);
+    setSweepResult(null);
+    try {
+      const payload = {
+        strategy_id: selectedId,
+        ticker: config.ticker, timeframe: config.timeframe,
+        start: config.start, end: config.end,
+        param_grid: paramGrid,
+        selection_metric: sweepCfg.selectionMetric,
+        higher_is_better: sweepCfg.selectionMetric !== 'max_drawdown',
+        heatmaps: gridHeatmapAxes(paramGrid, sweepCfg.selectionMetric),
+        include_deflated_sharpe: true,
+        starting_capital: config.starting_capital,
+        cost_config: costConfig,
+      };
+      setSweepResult(await runSweep(payload));
+      setShowOptimise(false);
+    } catch (err) {
+      setRunError(err.message);
+    } finally {
+      setOptimising(false);
+      optimiseLockRef.current = false;
     }
   };
 
   // ---- main canvas content ------------------------------------------
 
-  const backtestCanvas = result && runMode === 'backtest' && html`
+  const backtestCanvas = result && html`
     <div class="p-6 space-y-6">
       <${PinStrip} pins=${pins} onUnpin=${handleUnpin}
         onCompare=${() => setComparing(true)} comparing=${comparing} />
@@ -2945,79 +3067,33 @@ function App() {
         <div class="text-xs uppercase tracking-wider text-mute-400 mb-3">All metrics</div>
         <${FullMetricsTable} result=${result} />
       </div>
-    </div>
-  `;
 
-  const sweepCanvas = sweepResult && runMode === 'sweep' && html`
-    <div class="p-6 space-y-6">
-      <div class="flex items-baseline justify-between">
-        <div>
-          <div class="text-xs uppercase tracking-wider text-mute-400">Parameter sweep</div>
-          <div class="text-lg text-mute-100 font-medium mt-0.5">
-            ${selectedStrategy?.name ?? '—'}
-            <span class="ml-2 text-sm font-normal text-mute-400 num">
-              ${sweepResult.n_combinations} combos · best index ${sweepResult.best_index ?? '—'}
-            </span>
-          </div>
-        </div>
-        <div class="text-xs text-mute-400 num">run ${sweepResult.run_id?.slice(0,8)}…</div>
+      <div class="border-t border-ink-700 pt-6">
+        <${OptimiseSection}
+          baseline=${result}
+          sweepCfg=${sweepCfg} setSweepCfg=${setSweepCfg}
+          sweepResult=${sweepResult}
+          optimising=${optimising}
+          show=${showOptimise}
+          onShow=${() => setShowOptimise(true)}
+          onHide=${() => setShowOptimise(false)}
+          onOptimise=${onOptimise}
+          error=${runError} />
       </div>
-
-      ${sweepResult.heatmaps?.length > 0 && html`
-        <div class="bg-ink-900 border border-ink-700 rounded p-4">
-          <div class="text-xs uppercase tracking-wider text-mute-400 mb-4">Parameter heatmap</div>
-          ${sweepResult.heatmaps.map((hm, i) => html`
-            <div key=${i}><${HeatmapGrid} heatmap=${hm} /></div>
-          `)}
-        </div>
-      `}
-
-      ${sweepResult.deflated_sharpe && html`<${DSRCard} dsr=${sweepResult.deflated_sharpe} />`}
-
-      <div class="bg-ink-900 border border-ink-700 rounded p-4">
-        <div class="text-xs uppercase tracking-wider text-mute-400 mb-3">
-          All combos · sorted by ${sweepResult.selection_metric.replace(/_/g,' ')}
-          ${sweepResult.higher_is_better ? '(↓ best first)' : '(↑ best first)'}
-        </div>
-        <${ComboTable}
-          combos=${sweepResult.combos}
-          bestIndex=${sweepResult.best_index}
-          selectionMetric=${sweepResult.selection_metric}
-          higherIsBetter=${sweepResult.higher_is_better} />
-      </div>
-
-      ${sweepResult.best_combo_timestamps && sweepResult.best_combo_equity && html`
-        <div>
-          <div class="text-xs uppercase tracking-wider text-mute-400 mb-3">
-            Best combo equity curve
-            ${sweepResult.best_index !== null && sweepResult.combos[sweepResult.best_index]
-              ? html` <span class="ml-2 normal-case font-normal text-mute-400 num">
-                  (${Object.entries(sweepResult.combos.find(c => c.index === sweepResult.best_index)?.params ?? {})
-                    .map(([k,v]) => `${k}=${v}`).join(', ')})
-                </span>`
-              : null}
-          </div>
-          <div class="h-[340px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
-            <${EquityChart}
-              timestamps=${sweepResult.best_combo_timestamps}
-              equity=${sweepResult.best_combo_equity} />
-          </div>
-        </div>
-      `}
     </div>
   `;
 
   const emptyCanvas = html`
     <div class="h-full flex items-center justify-center text-mute-400 text-sm">
       ${running
-        ? html`<span>${runMode === 'sweep' ? 'Running sweep…' : 'Running backtest…'}</span>`
+        ? html`<span>Running backtest…</span>`
         : runError
           ? html`<span class="text-danger-500 max-w-md text-center">Error: ${runError}</span>`
-          : html`<span>Press ${runMode === 'sweep' ? 'Run Sweep' : 'Run Backtest'} to see results.</span>`}
+          : html`<span>Press Run Backtest to see results.</span>`}
     </div>
   `;
 
-  const showCanvas = runMode === 'backtest' ? !!result : !!sweepResult;
+  const showCanvas = !!result;
 
   return html`
     <div class="h-full flex flex-col">
@@ -3080,7 +3156,8 @@ function App() {
                     try {
                       const r = await getRun(runId);
                       setResult(r);
-                      setRunMode('backtest');
+                      setSweepResult(null);
+                      setShowOptimise(false);
                       setRunError(null);
                       setView('run');
                       if (r.strategy_id) setSelectedId(r.strategy_id);
@@ -3103,17 +3180,15 @@ function App() {
                       </div>
                     </div>
                   `}
-                  ${showCanvas ? (runMode === 'backtest' ? backtestCanvas : sweepCanvas) : emptyCanvas}
+                  ${showCanvas ? backtestCanvas : emptyCanvas}
                 `}
         </main>
 
         ${view === 'run' && !comparing && html`<${RightRail}
           selectedId=${selectedId} config=${config} setConfig=${setConfig}
           robustness=${robustness} setRobustness=${setRobustness}
-          sweepCfg=${sweepCfg} setSweepCfg=${setSweepCfg}
           costConfig=${costConfig} setCostConfig=${setCostConfig}
           eventDriven=${eventDriven} setEventDriven=${setEventDriven}
-          runMode=${runMode} setRunMode=${setRunMode}
           onRun=${onRun} running=${running} />`}
       </div>
     </div>
