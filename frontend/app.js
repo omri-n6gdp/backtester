@@ -44,6 +44,17 @@ const DEFAULT_COST_CONFIG = {
 
 // Up to N pins; pin colors cycle through these.
 const PIN_COLORS = ['#22c55e', '#3b82f6', '#f59e0b'];
+
+// Phase 14 — friendly schedule presets for the Deploy form. All in UTC
+// because the scheduler is UTC-only; the US close picks summer/winter
+// explicitly because cron has no concept of DST.
+const SCHEDULE_PRESETS = [
+  { label: 'After US close · weekdays · 21:05 UTC (summer/EDT)', cron: '5 21 * * 1-5' },
+  { label: 'After US close · weekdays · 22:05 UTC (winter/EST)', cron: '5 22 * * 1-5' },
+  { label: 'Before US open · weekdays · 13:25 UTC',              cron: '25 13 * * 1-5' },
+  { label: 'After EU close · weekdays · 16:35 UTC',              cron: '35 16 * * 1-5' },
+  { label: 'Daily · 00:05 UTC',                                  cron: '5 0 * * *' },
+];
 const PIN_LIMIT = 3;
 
 const MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -2095,8 +2106,19 @@ function DeployCreateForm({ strategies, busy, onCreate }) {
           </select>
         </${Field}>
         <${Field} label="Schedule (cron · UTC)">
-          <input class=${inputCls()} placeholder="5 21 * * 1-5" value=${form.schedule_cron}
-            onChange=${e => set('schedule_cron', e.target.value)} />
+          <div class="flex gap-1">
+            <select class="${inputCls()} flex-1"
+              value=${SCHEDULE_PRESETS.find(p => p.cron === form.schedule_cron)?.cron ?? ''}
+              onChange=${e => e.target.value && set('schedule_cron', e.target.value)}
+              title="Preset → fills the cron field. The field stays editable.">
+              <option value="">— preset —</option>
+              ${SCHEDULE_PRESETS.map(p => html`
+                <option key=${p.cron} value=${p.cron}>${p.label}</option>`)}
+            </select>
+            <input class="${inputCls()} flex-1" placeholder="5 21 * * 1-5"
+              value=${form.schedule_cron}
+              onChange=${e => set('schedule_cron', e.target.value)} />
+          </div>
         </${Field}>
       </div>
       <div class="mt-3">
