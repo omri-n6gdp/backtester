@@ -8,10 +8,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import uvicorn
-from fastapi.staticfiles import StaticFiles
 
 from backend.api import create_app
 from backend.logging_config import setup_logging
+from backend.staticfiles import NoCacheStaticFiles
 
 # Wire the root logger to ~/.backtester/logs/ + console before anything
 # else, so app construction and the lifespan startup are captured too.
@@ -25,9 +25,11 @@ app = create_app(with_scheduler=True)
 
 # Serve frontend/ at the root. html=True makes /  serve index.html.
 # Mounted last so API routes (registered inside create_app) take precedence.
+# NoCacheStaticFiles asks browsers to revalidate every request, so a code
+# change appears after a normal refresh — no hard-refresh required.
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 if FRONTEND_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+    app.mount("/", NoCacheStaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
 
 if __name__ == "__main__":
