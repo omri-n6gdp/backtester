@@ -2302,7 +2302,11 @@ function DeploymentTrackingPanel({ deploymentId, strategies, onBack }) {
         <div>
           <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">
             Expected equity curve
-            <span class="normal-case text-mute-400">— a backtest of this strategy over the data window</span>
+            <span class="normal-case text-mute-400">
+              ${data.expected_rebased
+                ? '— backtested over the deployment\'s live period, rebased to its capital'
+                : '— backtested over the full lookback window (no live bars yet)'}
+            </span>
           </div>
           ${data.expected_error
             ? html`<div class="bg-ink-900 border border-ink-700 rounded px-4 py-8 text-center text-mute-400 text-sm">

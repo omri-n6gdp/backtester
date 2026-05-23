@@ -529,6 +529,13 @@ class DeploymentTrackingResponse(BaseModel):
     expected_buy_hold: list[float | None] = Field(default_factory=list)
     expected_positions: list[float | None]
     expected_metrics: dict[str, Any]
+    # Phase 14 — rebase. When True the expected_* curves cover the live
+    # period only (from the deployment's created_at, scaled so the first
+    # bar equals deployment_capital), so the comparison with the orders
+    # below is apples-to-apples. False means the curve fell back to the
+    # full lookback window — happens for a brand-new deployment with no
+    # bars yet since it was created.
+    expected_rebased: bool = False
     expected_error: str | None = None
 
 

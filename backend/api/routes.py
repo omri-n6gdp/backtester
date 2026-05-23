@@ -1652,6 +1652,7 @@ def deployment_tracking_route(deployment_id: str) -> DeploymentTrackingResponse:
     expected_positions: list[float | None] = []
     expected_metrics: dict[str, Any] = {}
     expected_error: str | None = None
+    expected_rebased: bool = False
     try:
         if strat is None or strat["active"] == 0:
             raise RuntimeError("strategy not found or inactive")
@@ -1679,13 +1680,38 @@ def deployment_tracking_route(deployment_id: str) -> DeploymentTrackingResponse:
             starting_capital=row["deployment_capital"],
             bars_per_year=252,
         )
-        expected_timestamps = _index_to_iso(result.equity.index)
-        expected_equity = _series_to_list(result.equity)
-        expected_buy_hold = _buy_hold_equity(
-            data["close"].reindex(result.equity.index), row["deployment_capital"],
-        )
-        expected_positions = _series_to_list(result.positions)
         expected_metrics = _metrics_to_dict(compute_metrics(result))
+
+        # Phase 14 — rebase the expected curve to the deployment's live
+        # period so the visual comparison against the orders below is
+        # apples-to-apples. Metrics stay over the full lookback window —
+        # they describe the strategy's history, not just this slice.
+        # Fall back to the full window for a brand-new deployment whose
+        # created_at is later than every available bar.
+        created_ts = pd.Timestamp(row["created_at"])
+        live_index = result.equity.index[result.equity.index >= created_ts]
+        if len(live_index) > 0:
+            equity_slice = result.equity.loc[live_index]
+            first_eq = float(equity_slice.iloc[0])
+            scale = (row["deployment_capital"] / first_eq) if first_eq > 0 else 1.0
+            equity_rebased = equity_slice * scale
+
+            expected_timestamps = _index_to_iso(equity_rebased.index)
+            expected_equity = _series_to_list(equity_rebased)
+            expected_positions = _series_to_list(result.positions.loc[live_index])
+            expected_buy_hold = _buy_hold_equity(
+                data["close"].reindex(equity_rebased.index),
+                row["deployment_capital"],
+            )
+            expected_rebased = True
+        else:
+            expected_timestamps = _index_to_iso(result.equity.index)
+            expected_equity = _series_to_list(result.equity)
+            expected_positions = _series_to_list(result.positions)
+            expected_buy_hold = _buy_hold_equity(
+                data["close"].reindex(result.equity.index),
+                row["deployment_capital"],
+            )
     except Exception as e:  # noqa: BLE001 — the expected curve is best-effort
         expected_error = f"{type(e).__name__}: {e!s}"
 
@@ -1698,6 +1724,7 @@ def deployment_tracking_route(deployment_id: str) -> DeploymentTrackingResponse:
         expected_positions=expected_positions,
         expected_metrics=expected_metrics,
         expected_error=expected_error,
+        expected_rebased=expected_rebased,
     )
 
 

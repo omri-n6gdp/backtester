@@ -6,6 +6,9 @@ backtest) have their price + T212 seams monkeypatched — no live calls.
 """
 from __future__ import annotations
 
+import pandas as pd
+import pytest
+
 from backend.t212 import client as t212_client
 from tests.conftest import install_fake_prices, make_synthetic_ohlcv, post_strategy
 
@@ -231,6 +234,50 @@ def test_tracking_includes_orders_after_a_run(api_client, monkeypatch):
     assert len(body["orders"]) == 1
     assert body["orders"][0]["status"] == "SUBMITTED"
     assert body["orders"][0]["side"] == "BUY"
+
+
+def test_tracking_expected_curve_is_rebased_to_live_period(api_client, monkeypatch):
+    """Phase 14 — the expected curve covers the deployment's live period
+    only and is rebased so its first bar equals deployment_capital,
+    making the comparison vs actual orders apples-to-apples."""
+    sid = post_strategy(api_client, "S", _STRATEGY)
+    dep = _create_deployment(api_client, sid).json()
+
+    # Synthetic data spanning a window around now() so the deployment's
+    # created_at falls inside the bars and the rebase slice is non-empty.
+    today = pd.Timestamp.now("UTC").normalize()
+    start = (today - pd.Timedelta(days=30)).date().isoformat()
+    install_fake_prices(monkeypatch, lambda *a, **k: make_synthetic_ohlcv(n=60, start=start))
+    monkeypatch.setattr("backend.deploy.scheduler.resolve_price_ticker", lambda t: "AAPL")
+
+    body = api_client.get(f"/deployments/{dep['id']}/tracking").json()
+    assert body["expected_error"] is None
+    assert body["expected_rebased"] is True
+    assert len(body["expected_equity"]) > 0
+    # The rebase invariant: the first bar of the live curve equals the
+    # deployment's capital.
+    assert body["expected_equity"][0] == pytest.approx(dep["deployment_capital"])
+    # And every timestamp is on or after the deployment's created_at.
+    created_at = body["deployment"]["created_at"]
+    assert all(ts >= created_at for ts in body["expected_timestamps"])
+
+
+def test_tracking_falls_back_to_full_window_for_new_deployment(api_client, monkeypatch):
+    """If every available bar is older than the deployment's created_at
+    (brand-new deployment with no live bars yet), the curve falls back to
+    the full lookback window and expected_rebased is False — better to
+    show the strategy's history than an empty chart."""
+    sid = post_strategy(api_client, "S", _STRATEGY)
+    dep = _create_deployment(api_client, sid).json()
+
+    # 2010-only data — well before any plausible created_at.
+    install_fake_prices(monkeypatch, lambda *a, **k: make_synthetic_ohlcv(n=300))
+    monkeypatch.setattr("backend.deploy.scheduler.resolve_price_ticker", lambda t: "AAPL")
+
+    body = api_client.get(f"/deployments/{dep['id']}/tracking").json()
+    assert body["expected_error"] is None
+    assert body["expected_rebased"] is False
+    assert len(body["expected_equity"]) == 300
 
 
 def test_tracking_unknown_deployment_404(api_client):
