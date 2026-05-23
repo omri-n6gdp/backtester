@@ -110,6 +110,8 @@ class DeploymentRunResult:
         ERROR      an exception was caught — see `error`
         CIRCUIT_BREAKER  open-position loss exceeded max_loss_value; the
                    deployment was disarmed and nothing was placed
+        INSUFFICIENT_CASH  the BUY intents need more cash than the T212
+                   account has free; nothing was submitted (Phase 14)
     """
 
     deployment_id: str
@@ -244,6 +246,45 @@ def _load_strategy_code(strategy_id: str) -> str:
 # --- the pipeline (one deployment, one fire) ------------------------------
 
 
+def _check_cash_for_intents(
+    deployment_id: str,
+    intents: list[OrderIntent],
+    last_close: float,
+    fx_factor: float,
+) -> str | None:
+    """Phase 14 — best-effort cash precheck before submitting BUY orders.
+
+    Returns None when the order can proceed (sufficient cash, no BUY
+    intents, or the precheck itself failed and we fall through). Returns
+    a short error message when there is definitely not enough free cash,
+    so the caller can mark the run INSUFFICIENT_CASH and skip submission
+    rather than letting T212 reject every order individually."""
+    buy_qty = sum(i.qty for i in intents if i.side == "BUY")
+    if buy_qty <= 0:
+        return None
+    try:
+        cash_info = t212_client.get_account_cash()
+        cash_free = float(cash_info.get("free", 0.0))
+    except Exception:  # noqa: BLE001 — precheck is best-effort, don't block
+        logger.exception(
+            "run_deployment %s: cash precheck failed; continuing to submit",
+            deployment_id,
+        )
+        return None
+    cash_needed = buy_qty * last_close * fx_factor
+    if cash_needed > cash_free:
+        msg = (
+            f"need {cash_needed:.2f}, have {cash_free:.2f} free "
+            f"(BUY qty {buy_qty:.4f} @ {last_close:.4f} × FX {fx_factor:.4f})"
+        )
+        logger.warning(
+            "run_deployment %s: insufficient cash — %s; skipping submission",
+            deployment_id, msg,
+        )
+        return msg
+    return None
+
+
 def _circuit_breaker_tripped(
     deployment: dict[str, Any], portfolio: list[dict[str, Any]],
 ) -> bool:
@@ -342,14 +383,27 @@ def run_deployment(deployment_id: str) -> DeploymentRunResult:
                     price_fx_factor=fx_factor,
                 )
                 if intents:
-                    with connect() as conn:
-                        submit_results = submit_intents(
-                            conn, deployment_id=deployment_id, intents=intents,
-                        )
+                    # Phase 14 — precheck T212 cash against the BUY intents.
+                    # If short, skip the whole submit block; T212 would
+                    # reject anyway and we'd burn the per-endpoint rate
+                    # limit doing it.
+                    cash_short = _check_cash_for_intents(
+                        deployment_id, intents,
+                        last_close=float(data["close"].iloc[-1]),
+                        fx_factor=fx_factor,
+                    )
+                    if cash_short is not None:
+                        status = "INSUFFICIENT_CASH"
+                        error = cash_short
+                    else:
+                        with connect() as conn:
+                            submit_results = submit_intents(
+                                conn, deployment_id=deployment_id, intents=intents,
+                            )
                 n_submitted = sum(1 for r in submit_results if r.status == "SUBMITTED")
                 logger.info(
-                    "run_deployment %s: as_of=%s intents=%d submitted=%d",
-                    deployment_id, as_of, len(intents), n_submitted,
+                    "run_deployment %s: as_of=%s intents=%d submitted=%d status=%s",
+                    deployment_id, as_of, len(intents), n_submitted, status,
                 )
     except Exception as exc:  # noqa: BLE001 — top-level job boundary
         logger.exception("run_deployment %s failed", deployment_id)

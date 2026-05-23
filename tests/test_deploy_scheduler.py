@@ -144,6 +144,8 @@ def test_run_deployment_happy_path_submits_order(fresh_db, monkeypatch):
     monkeypatch.setattr(scheduler, "resolve_price_ticker", lambda t: "AAPL")
     monkeypatch.setattr(scheduler, "account_fx_factor", lambda t: 1.0)
     monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+    # Phase 14 — the precheck calls T212; keep it off the network.
+    monkeypatch.setattr(t212_client, "get_account_cash", lambda: {"free": 1_000_000.0})
 
     placed = []
 
@@ -188,6 +190,7 @@ def test_run_deployment_is_idempotent_for_same_bar(fresh_db, monkeypatch):
     # Portfolio stays empty across both fires — isolates the hash mechanism
     # from the "portfolio already caught up" path.
     monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+    monkeypatch.setattr(t212_client, "get_account_cash", lambda: {"free": 1_000_000.0})
     # The 2nd run reconciles the 1st run's order — keep it off the network.
     monkeypatch.setattr(t212_client, "get_order", lambda oid: {"status": "NEW"})
 
@@ -286,6 +289,65 @@ def test_run_deployment_catches_exceptions(fresh_db, monkeypatch):
     assert "yfinance exploded" in (result.error or "")
     with connect() as conn:
         assert repo.get_deployment(conn, dep_id)["last_run_at"] is not None
+
+
+# --- cash precheck (Phase 14) --------------------------------------------
+
+
+def test_run_deployment_insufficient_cash_skips_submission(fresh_db, monkeypatch):
+    """When T212 free cash is below the cash needed for the BUY intents,
+    the run is marked INSUFFICIENT_CASH and no order is placed — the
+    deployment stays armed so the next bar gets a fresh check."""
+    dep_id = _seed_deployment(fresh_db, armed=True)
+
+    df = make_synthetic_ohlcv(n=300).copy()
+    df.loc[df.index[-1], "close"] = 200.0  # BUY qty 12.5, cash needed $2500
+    monkeypatch.setattr(scheduler, "get_prices", _recording_prices(df))
+    monkeypatch.setattr(scheduler, "resolve_price_ticker", lambda t: "AAPL")
+    monkeypatch.setattr(scheduler, "account_fx_factor", lambda t: 1.0)
+    monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+    # Free cash well below $2500 — precheck should trip.
+    monkeypatch.setattr(t212_client, "get_account_cash", lambda: {"free": 100.0})
+
+    placed = []
+    monkeypatch.setattr(t212_client, "place_market_order",
+                        lambda t, q: placed.append((t, q)) or {"id": 1})
+
+    result = scheduler.run_deployment(dep_id)
+
+    assert result.status == "INSUFFICIENT_CASH"
+    assert placed == [], "no order may be submitted when cash is short"
+    assert result.error and "need" in result.error and "free" in result.error
+    # Deployment stays armed so the next bar gets another chance.
+    with connect() as conn:
+        assert repo.get_deployment(conn, dep_id)["armed"] == 1
+
+
+def test_run_deployment_cash_precheck_failure_does_not_block(fresh_db, monkeypatch):
+    """The precheck is best-effort — a failing get_account_cash call
+    (network/auth error) is swallowed and the order is submitted normally.
+    Without this, every transient T212 hiccup would block the deployment."""
+    dep_id = _seed_deployment(fresh_db, armed=True)
+
+    df = make_synthetic_ohlcv(n=300).copy()
+    df.loc[df.index[-1], "close"] = 200.0
+    monkeypatch.setattr(scheduler, "get_prices", _recording_prices(df))
+    monkeypatch.setattr(scheduler, "resolve_price_ticker", lambda t: "AAPL")
+    monkeypatch.setattr(scheduler, "account_fx_factor", lambda t: 1.0)
+    monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+
+    def boom():
+        raise RuntimeError("T212 hiccup")
+    monkeypatch.setattr(t212_client, "get_account_cash", boom)
+
+    placed = []
+    monkeypatch.setattr(t212_client, "place_market_order",
+                        lambda t, q: placed.append((t, q)) or _T212_RESPONSE)
+
+    result = scheduler.run_deployment(dep_id)
+
+    assert result.status == "OK"
+    assert placed == [("AAPL_US_EQ", 12.5)]
 
 
 # --- resolve_price_ticker -------------------------------------------------
