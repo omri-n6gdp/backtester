@@ -4,7 +4,7 @@
 // of pinned runs) and 'author' (new strategy). Within 'run', two run
 // modes: 'backtest' and 'sweep'.
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import htm from 'htm';
 
@@ -1321,6 +1321,7 @@ function ValidationPanel({ result }) {
 }
 
 function AuthorView({ onCancel, onSaved }) {
+  const pushToast = useToast();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [englishPrompt, setEnglishPrompt] = useState('');
@@ -1343,6 +1344,7 @@ function AuthorView({ onCancel, onSaved }) {
       setValidationResult(resp.validation_result);
     } catch (err) {
       setAuthorError(err.message);
+      pushToast('error', `Translate failed: ${err.message}`);
     } finally {
       setGenerating(false);
     }
@@ -1361,6 +1363,7 @@ function AuthorView({ onCancel, onSaved }) {
       setValidationResult(result);
     } catch (err) {
       setAuthorError(err.message);
+      pushToast('error', `Validate failed: ${err.message}`);
     } finally {
       setValidating(false);
     }
@@ -1388,9 +1391,11 @@ function AuthorView({ onCancel, onSaved }) {
         return;
       }
       const created = await createStrategy(name.trim(), description.trim(), code);
+      pushToast('success', `Saved strategy "${name.trim()}".`);
       onSaved(created.strategy_id);
     } catch (err) {
       setAuthorError(err.message);
+      pushToast('error', `Save failed: ${err.message}`);
     } finally {
       setSaving(false);
     }
@@ -1479,6 +1484,7 @@ function AuthorView({ onCancel, onSaved }) {
 // ---- LibraryView (Phase 8) -----------------------------------------
 
 function LibraryView({ onOpenRun, onClose }) {
+  const pushToast = useToast();
   const [runs, setRuns] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [weights, setWeights] = useState(DEFAULT_LIB_WEIGHTS);
@@ -1490,7 +1496,12 @@ function LibraryView({ onOpenRun, onClose }) {
     let live = true;
     getLibrary()
       .then(body => { if (live) setRuns(body.runs); })
-      .catch(err => { if (live) setLoadError(err.message); });
+      .catch(err => {
+        if (live) {
+          setLoadError(err.message);
+          pushToast('error', `Could not load library: ${err.message}`);
+        }
+      });
     return () => { live = false; };
   }, []);
 
@@ -1883,6 +1894,7 @@ function LivePiesPanel({ pies }) {
 }
 
 function LiveView({ onClose }) {
+  const pushToast = useToast();
   const [tab, setTab] = useState('account');
   const [data, setData] = useState({});
   const [errors, setErrors] = useState({});
@@ -1904,7 +1916,9 @@ function LiveView({ onClose }) {
       const result = await fetchers[which]();
       setData(prev => ({ ...prev, [which]: result }));
     } catch (err) {
-      setErrors(prev => ({ ...prev, [which]: t212ErrorString(err) }));
+      const msg = t212ErrorString(err);
+      setErrors(prev => ({ ...prev, [which]: msg }));
+      pushToast('error', `T212 ${which}: ${msg}`);
     } finally {
       setLoading(prev => ({ ...prev, [which]: false }));
     }
@@ -2261,6 +2275,7 @@ function DeploymentList({ deployments, loading, error, strategies, busy,
 }
 
 function DeploymentTrackingPanel({ deploymentId, strategies, onBack }) {
+  const pushToast = useToast();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -2272,6 +2287,7 @@ function DeploymentTrackingPanel({ deploymentId, strategies, onBack }) {
       setData(await getDeploymentTracking(deploymentId));
     } catch (err) {
       setError(err.message);
+      pushToast('error', `Could not load tracking: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -2451,6 +2467,7 @@ function DeploymentTrackingPanel({ deploymentId, strategies, onBack }) {
 }
 
 function DeployView({ strategies, onClose }) {
+  const pushToast = useToast();
   const [deployments, setDeployments] = useState(null);
   const [listError, setListError] = useState(null);
   const [listLoading, setListLoading] = useState(false);
@@ -2471,6 +2488,7 @@ function DeployView({ strategies, onClose }) {
     } catch (err) {
       setListError(err.message);
       setDeployments([]);
+      pushToast('error', `Failed to load deployments: ${err.message}`);
     } finally {
       setListLoading(false);
     }
@@ -2490,8 +2508,10 @@ function DeployView({ strategies, onClose }) {
           setArmModal(null);
           setFormKey(k => k + 1);
           await loadDeployments();
+          pushToast('success', `Armed deployment for ${payload.ticker}.`);
         } catch (err) {
           setActionError(err.message);
+          pushToast('error', `Could not arm deployment: ${err.message}`);
         } finally {
           setBusy(false);
         }
@@ -2511,8 +2531,10 @@ function DeployView({ strategies, onClose }) {
           await armDeployment(dep.id, 'ARM');
           setArmModal(null);
           await loadDeployments();
+          pushToast('success', `Armed: ${dep.ticker}.`);
         } catch (err) {
           setActionError(err.message);
+          pushToast('error', `Arm failed: ${err.message}`);
         } finally {
           setBusy(false);
         }
@@ -2526,8 +2548,10 @@ function DeployView({ strategies, onClose }) {
     try {
       await disarmDeployment(dep.id);
       await loadDeployments();
+      pushToast('info', `Paused: ${dep.ticker}.`);
     } catch (err) {
       setActionError(err.message);
+      pushToast('error', `Pause failed: ${err.message}`);
     } finally {
       setBusy(false);
     }
@@ -2542,8 +2566,10 @@ function DeployView({ strategies, onClose }) {
     try {
       await deleteDeployment(dep.id);
       await loadDeployments();
+      pushToast('success', `Deleted: ${dep.ticker}.`);
     } catch (err) {
       setActionError(err.message);
+      pushToast('error', `Delete failed: ${err.message}`);
     } finally {
       setBusy(false);
     }
@@ -2557,8 +2583,18 @@ function DeployView({ strategies, onClose }) {
       const res = await runDeployment(dep.id);
       setRunResult(res);
       await loadDeployments();
+      // Status-aware toast: OK is success, anything else is informational
+      // or an error depending on severity.
+      if (res.status === 'OK') {
+        pushToast('success', `${dep.ticker}: ran (${res.submitted ?? 0} order(s) submitted).`);
+      } else if (res.status === 'ERROR' || res.status === 'CIRCUIT_BREAKER') {
+        pushToast('error', `${dep.ticker}: ${res.status}${res.error ? ' — ' + res.error : ''}`);
+      } else {
+        pushToast('warning', `${dep.ticker}: ${res.status}`);
+      }
     } catch (err) {
       setActionError(err.message);
+      pushToast('error', `Run failed: ${err.message}`);
     } finally {
       setBusy(false);
     }
@@ -2578,8 +2614,10 @@ function DeployView({ strategies, onClose }) {
           setArmModal(null);
           setKillResult(res);
           await loadDeployments();
+          pushToast('warning', `Kill switch fired — disarmed ${res.disarmed_count ?? 0}, flattened ${res.flattened_count ?? 0}.`);
         } catch (err) {
           setActionError(err.message);
+          pushToast('error', `Kill switch failed: ${err.message}`);
         } finally {
           setBusy(false);
         }
@@ -2902,9 +2940,81 @@ function OptimiseSection({ baseline, sweepCfg, setSweepCfg, sweepResult,
 }
 
 
+// ---- Toast notifications (Phase 14) --------------------------------
+//
+// One global queue, rendered top-right, used by any view that wants to
+// surface a transient message. Errors get a manual close button; all
+// kinds auto-dismiss after their TTL. The `pushToast` ref pattern lets
+// non-component code (e.g. event handlers fired from setTimeout chains)
+// reach the queue without re-rendering on every push.
+
+const ToastContext = createContext(null);
+
+const TOAST_TTL = { error: 8000, warning: 6000, success: 4000, info: 4000 };
+
+const TOAST_STYLE = {
+  error:   { border: 'border-danger-500/40',  bg: 'bg-danger-500/10',  text: 'text-danger-500',  label: 'Error'   },
+  warning: { border: 'border-yellow-400/40',  bg: 'bg-yellow-400/10',  text: 'text-yellow-300',  label: 'Warning' },
+  success: { border: 'border-accent-500/40',  bg: 'bg-accent-500/10',  text: 'text-accent-400',  label: 'Done'    },
+  info:    { border: 'border-mute-500/40',    bg: 'bg-ink-800',        text: 'text-mute-200',    label: 'Info'    },
+};
+
+function ToastProvider({ children }) {
+  const [toasts, setToasts] = useState([]);
+  const idRef = useRef(0);
+
+  const dismiss = useCallback((id) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  const push = useCallback((arg1, arg2) => {
+    // Two call shapes: pushToast('error', 'message') or
+    // pushToast({ kind, message, ttl }). The first is shorter at the
+    // catch site; the second lets callers tune ttl.
+    const opts = typeof arg1 === 'string' ? { kind: arg1, message: arg2 } : (arg1 || {});
+    const kind = opts.kind && TOAST_STYLE[opts.kind] ? opts.kind : 'info';
+    const message = String(opts.message ?? '').trim();
+    if (!message) return;
+    const id = ++idRef.current;
+    const ttl = opts.ttl ?? TOAST_TTL[kind];
+    setToasts(prev => [...prev, { id, kind, message }]);
+    if (ttl > 0) setTimeout(() => dismiss(id), ttl);
+  }, [dismiss]);
+
+  return html`
+    <${ToastContext.Provider} value=${push}>
+      ${children}
+      <div class="fixed top-3 right-3 z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
+        ${toasts.map(t => {
+          const s = TOAST_STYLE[t.kind];
+          return html`
+            <div key=${t.id}
+                 class="pointer-events-auto ${s.bg} ${s.text} border ${s.border} rounded shadow-lg px-3 py-2 text-sm flex items-start gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="text-xs uppercase tracking-wider opacity-70">${s.label}</div>
+                <div class="break-words">${t.message}</div>
+              </div>
+              <button class="text-mute-400 hover:text-mute-100 text-xs leading-none px-1"
+                      onClick=${() => dismiss(t.id)} aria-label="Dismiss">✕</button>
+            </div>`;
+        })}
+      </div>
+    </${ToastContext.Provider}>
+  `;
+}
+
+// Used by every component that wants to push a toast. Safe to call from
+// anywhere inside the Provider — returns a no-op outside it (so unit
+// helpers don't crash).
+function useToast() {
+  return useContext(ToastContext) || (() => {});
+}
+
+
 // ---- App -----------------------------------------------------------
 
 function App() {
+  const pushToast = useToast();
   const [serverOk, setServerOk] = useState(null);
   const [serverVersion, setServerVersion] = useState('');
   const [strategies, setStrategies] = useState([]);
@@ -3008,7 +3118,11 @@ function App() {
         setStratLoading(false);
         setSelectedId(prev => prev ?? (list[0]?.id ?? null));
       })
-      .catch(err => { setStratError(err.message); setStratLoading(false); });
+      .catch(err => {
+        setStratError(err.message);
+        setStratLoading(false);
+        pushToast('error', `Could not load strategies: ${err.message}`);
+      });
   };
   useEffect(refreshStrategies, []);
 
@@ -3087,6 +3201,7 @@ function App() {
       setResult(await runBacktest(payload));
     } catch (err) {
       setRunError(err.message);
+      pushToast('error', `Backtest failed: ${err.message}`);
     } finally {
       setRunning(false);
       runLockRef.current = false;
@@ -3104,7 +3219,9 @@ function App() {
     try {
       paramGrid = JSON.parse(sweepCfg.paramGridJson);
     } catch {
-      setRunError('Param grid JSON is invalid — check the syntax and try again.');
+      const msg = 'Param grid JSON is invalid — check the syntax and try again.';
+      setRunError(msg);
+      pushToast('error', msg);
       return;
     }
 
@@ -3136,6 +3253,7 @@ function App() {
       setShowOptimise(false);
     } catch (err) {
       setRunError(err.message);
+      pushToast('error', `Optimise failed: ${err.message}`);
     } finally {
       setOptimising(false);
       optimiseLockRef.current = false;
@@ -3298,6 +3416,7 @@ function App() {
                       if (r.strategy_id) setSelectedId(r.strategy_id);
                     } catch (err) {
                       setRunError(`Failed to load run: ${err.message}`);
+                      pushToast('error', `Failed to load run: ${err.message}`);
                       setView('run');
                     }
                   }} />`
@@ -3331,4 +3450,4 @@ function App() {
 }
 
 const root = createRoot(document.getElementById('app'));
-root.render(html`<${App} />`);
+root.render(html`<${ToastProvider}><${App} /></${ToastProvider}>`);
