@@ -8,9 +8,17 @@ atomically.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from typing import Any
+
+
+# Phase 16.2 — sha256, truncated to 16 hex chars (64 bits of entropy).
+# Long enough to be collision-free for the lifetime of a personal-use
+# library; short enough to read in a UI badge.
+def hash_strategy_code(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()[:16]
 
 
 # -------- strategies --------
@@ -77,6 +85,96 @@ def set_strategy_favourite(
     return cur.rowcount > 0
 
 
+# -------- strategy versions (Phase 16.2) --------
+
+def insert_strategy_version(
+    conn: sqlite3.Connection,
+    *,
+    strategy_id: str,
+    code: str,
+    created_at: str,
+) -> tuple[str, bool]:
+    """Insert a row in `strategy_versions` if (strategy_id, code_hash) is
+    new; no-op when the hash already exists. Returns (code_hash, is_new).
+    Use after every save (create or update) so the hash trail is complete.
+    """
+    code_hash = hash_strategy_code(code)
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO strategy_versions "
+        "(strategy_id, code_hash, code, created_at) VALUES (?, ?, ?, ?)",
+        (strategy_id, code_hash, code, created_at),
+    )
+    return code_hash, cur.rowcount > 0
+
+
+def list_strategy_versions(
+    conn: sqlite3.Connection, strategy_id: str,
+) -> list[dict[str, Any]]:
+    """Most-recent-first history of a strategy's code versions. Code is
+    NOT included — callers that need it should hit get_strategy_version_code.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, strategy_id, code_hash, created_at
+        FROM strategy_versions
+        WHERE strategy_id = ?
+        ORDER BY id DESC
+        """,
+        (strategy_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_strategy_version_code(
+    conn: sqlite3.Connection, strategy_id: str, code_hash: str,
+) -> dict[str, Any] | None:
+    """Return one strategy_versions row by (strategy_id, code_hash)."""
+    row = conn.execute(
+        """
+        SELECT id, strategy_id, code_hash, code, created_at
+        FROM strategy_versions
+        WHERE strategy_id = ? AND code_hash = ?
+        """,
+        (strategy_id, code_hash),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_latest_strategy_version_hash(
+    conn: sqlite3.Connection, strategy_id: str,
+) -> str | None:
+    """Hash of the most recently inserted version row, or None when the
+    strategy has no version history yet (shouldn't happen post-migration)."""
+    row = conn.execute(
+        """
+        SELECT code_hash FROM strategy_versions
+        WHERE strategy_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (strategy_id,),
+    ).fetchone()
+    return row["code_hash"] if row else None
+
+
+def update_strategy_meta(
+    conn: sqlite3.Connection,
+    *,
+    strategy_id: str,
+    name: str,
+    description: str,
+) -> bool:
+    """Update a strategy's display fields (name / description). The code
+    lives on disk and in strategy_versions — this is metadata only.
+    Returns False if no active strategy has that id."""
+    cur = conn.execute(
+        "UPDATE strategies SET name = ?, description = ? "
+        "WHERE id = ? AND active = 1",
+        (name, description, strategy_id),
+    )
+    return cur.rowcount > 0
+
+
 # -------- runs / metrics / curves / trades --------
 
 def insert_run(
@@ -96,23 +194,27 @@ def insert_run(
     oos_json: str | None = None,
     dsr_json: str | None = None,
     monte_carlo_json: str | None = None,
+    strategy_code_hash: str | None = None,
 ) -> None:
     """Phase 16.1 — optional `oos_json`, `dsr_json`, `monte_carlo_json`
     carry the serialized response models for the OOS split, the
     deflated-Sharpe analysis, and the Monte Carlo trade-shuffle. They
-    travel as JSON strings so the schema stays opaque to repo callers."""
+    travel as JSON strings so the schema stays opaque to repo callers.
+
+    Phase 16.2 — optional `strategy_code_hash` links the run to the
+    exact `strategy_versions` row that ran. None for legacy callers."""
     conn.execute(
         """
         INSERT INTO runs (
             id, strategy_id, ticker, timeframe, start_date, end_date,
             params_json, cost_config_json, starting_capital, bars_per_year,
-            created_at, oos_json, dsr_json, monte_carlo_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, oos_json, dsr_json, monte_carlo_json, strategy_code_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id, strategy_id, ticker, timeframe, start_date, end_date,
             params_json, cost_config_json, starting_capital, bars_per_year,
-            created_at, oos_json, dsr_json, monte_carlo_json,
+            created_at, oos_json, dsr_json, monte_carlo_json, strategy_code_hash,
         ),
     )
 
@@ -163,12 +265,14 @@ def insert_trades(conn: sqlite3.Connection, *, run_id: str, trades: list[dict[st
 
 def get_run(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
     """Returns the run row plus the optional Phase 16.1 OOS/DSR/MC
-    JSON blobs (still as strings — callers parse if they need them)."""
+    JSON blobs (still as strings — callers parse if they need them)
+    and the Phase 16.2 strategy_code_hash link."""
     row = conn.execute(
         """
         SELECT id, strategy_id, ticker, timeframe, start_date, end_date,
                params_json, cost_config_json, starting_capital, bars_per_year,
-               created_at, oos_json, dsr_json, monte_carlo_json
+               created_at, oos_json, dsr_json, monte_carlo_json,
+               strategy_code_hash
         FROM runs WHERE id = ?
         """,
         (run_id,),
@@ -549,6 +653,7 @@ def list_runs_with_metrics(
                r.ticker, r.timeframe, r.start_date, r.end_date,
                r.params_json, r.created_at,
                r.oos_json, r.dsr_json, r.monte_carlo_json,
+               r.strategy_code_hash,
                m.metrics_json
         FROM runs r
         JOIN strategies s ON s.id = r.strategy_id
@@ -591,6 +696,8 @@ def list_runs_with_metrics(
             "oos": json.loads(r["oos_json"]) if r["oos_json"] else None,
             "dsr": json.loads(r["dsr_json"]) if r["dsr_json"] else None,
             "monte_carlo": json.loads(r["monte_carlo_json"]) if r["monte_carlo_json"] else None,
+            # Phase 16.2 — null for pre-migration runs.
+            "strategy_code_hash": r["strategy_code_hash"],
         })
     return out
 

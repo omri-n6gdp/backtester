@@ -43,6 +43,20 @@ class ValidationResultModel(BaseModel):
 class StrategyCreateResponse(BaseModel):
     strategy_id: str
     validation_result: ValidationResultModel
+    # Phase 16.2 — every save inserts a strategy_versions row. The hash
+    # of the saved code is surfaced so the frontend can badge "version
+    # vN" or pin a run to a specific code revision.
+    code_hash: str | None = None
+
+
+class StrategyUpdateRequest(BaseModel):
+    """Body for PUT /strategies/{id}. Updates the strategy's name,
+    description, and code. A new strategy_versions row is inserted if
+    the code hash is new; identical code is a no-op for the versions
+    table but still updates name/description."""
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    code: str = Field(min_length=1)
 
 
 class StrategySummary(BaseModel):
@@ -55,6 +69,34 @@ class StrategySummary(BaseModel):
 
 class StrategyDetail(StrategySummary):
     code: str
+    # Phase 16.2 — hash of the *current* code (latest version row).
+    code_hash: str | None = None
+
+
+# Phase 16.2 — version history.
+class StrategyVersionEntry(BaseModel):
+    """One row from strategy_versions. Code body is not included here —
+    use GET /strategies/{id}/versions/{hash} to fetch the code body."""
+    id: int
+    code_hash: str
+    created_at: str
+    is_current: bool
+
+
+class StrategyVersionsResponse(BaseModel):
+    """Most-recent-first version list for one strategy."""
+    strategy_id: str
+    current_hash: str | None
+    versions: list[StrategyVersionEntry]
+
+
+class StrategyVersionDetail(BaseModel):
+    """A single strategy_versions row including its code body."""
+    strategy_id: str
+    code_hash: str
+    code: str
+    created_at: str
+    is_current: bool
 
 
 class FavouriteRequest(BaseModel):
@@ -103,6 +145,8 @@ class LibraryRunModel(BaseModel):
     sharpe_source: str = "full"        # "oos" when OOS Sharpe powered sharpe_score
     dsr: float | None = None           # raw DSR probability in [0, 1]
     oos_sharpe: float | None = None    # raw OOS Sharpe (annualized)
+    # Phase 16.2 — code version this run ran against. Null for legacy.
+    strategy_code_hash: str | None = None
 
 
 class LibraryResponse(BaseModel):
@@ -422,6 +466,9 @@ class BacktestResponse(BaseModel):
     monte_carlo: MonteCarloResponseModel | None = None
     deflated_sharpe: DeflatedSharpeResponseModel | None = None
     regimes: RegimeAnalysisResponseModel | None = None
+    # Phase 16.2 — hash of the strategy code that produced this run.
+    # Null for pre-16.2 runs.
+    strategy_code_hash: str | None = None
 
 
 # ---------- /deployments (Phase 11.6) ----------

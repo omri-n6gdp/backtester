@@ -182,6 +182,22 @@ def test_oos_dsr_mc_round_trip_through_get_run(client_with_strategy):
             == body["oos"]["out_of_sample"]["metrics"].get("sharpe"))
 
 
+def test_backtest_links_run_to_strategy_code_hash(client_with_strategy):
+    """Phase 16.2 — every new run carries the current strategy hash and
+    /runs/{id} rehydrates it."""
+    client, sid = client_with_strategy
+    # The strategy's current hash, as reported by /strategies/{id}.
+    strat = client.get(f"/strategies/{sid}").json()
+    current_hash = strat["code_hash"]
+    assert current_hash is not None
+
+    body = client.post("/backtest", json=_payload(sid)).json()
+    assert body["strategy_code_hash"] == current_hash
+
+    reloaded = client.get(f"/runs/{body['run_id']}").json()
+    assert reloaded["strategy_code_hash"] == current_hash
+
+
 def test_library_uses_persisted_oos_sharpe_and_dsr(client_with_strategy):
     """A run created with OOS + DSR shows sharpe_source="oos" and a
     populated dsr field in the library response. A separate run without

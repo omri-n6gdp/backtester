@@ -54,9 +54,10 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "favourite": "INTEGER NOT NULL DEFAULT 0",  # Phase 15.4
     },
     "runs": {
-        "oos_json": "TEXT",          # Phase 16.1
-        "dsr_json": "TEXT",          # Phase 16.1
-        "monte_carlo_json": "TEXT",  # Phase 16.1
+        "oos_json": "TEXT",            # Phase 16.1
+        "dsr_json": "TEXT",            # Phase 16.1
+        "monte_carlo_json": "TEXT",    # Phase 16.1
+        "strategy_code_hash": "TEXT",  # Phase 16.2
     },
 }
 
@@ -70,6 +71,42 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
+def _backfill_strategy_versions(conn: sqlite3.Connection) -> None:
+    """Phase 16.2 — synthesize one strategy_versions row per active
+    strategy that doesn't have one yet (e.g. strategies created before
+    16.2 shipped). Reads each strategy's current code from disk and
+    inserts a version row using its content hash. Idempotent thanks to
+    the UNIQUE (strategy_id, code_hash) constraint.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    missing = conn.execute(
+        """
+        SELECT s.id, s.code_path, s.created_at
+        FROM strategies s
+        LEFT JOIN strategy_versions v ON v.strategy_id = s.id
+        WHERE s.active = 1 AND v.id IS NULL
+        GROUP BY s.id
+        """
+    ).fetchall()
+    for row in missing:
+        path = Path(row["code_path"])
+        if not path.exists():
+            continue
+        code = path.read_text(encoding="utf-8")
+        code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()[:16]
+        # Use the strategy's own created_at so the synthetic version
+        # carries the right timestamp instead of "right now".
+        created_at = row["created_at"] or datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT OR IGNORE INTO strategy_versions "
+            "(strategy_id, code_hash, code, created_at) VALUES (?, ?, ?, ?)",
+            (row["id"], code_hash, code, created_at),
+        )
+
+
 def migrate() -> None:
     """Apply schema.sql, then ALTER-in any columns added to existing tables
     after their initial CREATE. Idempotent."""
@@ -77,3 +114,4 @@ def migrate() -> None:
     with connect() as conn:
         conn.executescript(schema_sql)
         _ensure_columns(conn)
+        _backfill_strategy_versions(conn)

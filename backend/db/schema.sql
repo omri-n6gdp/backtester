@@ -11,6 +11,23 @@ CREATE TABLE IF NOT EXISTS strategies (
 );
 CREATE INDEX IF NOT EXISTS idx_strategies_active ON strategies(active);
 
+-- Phase 16.2: content-hashed strategy versions. Every save (create
+-- or update) inserts a row when the hash is new; the most recent
+-- row is the strategy's "current" code. Runs link to the exact hash
+-- they ran against (runs.strategy_code_hash) so editing a strategy
+-- does not silently invalidate prior backtest results.
+CREATE TABLE IF NOT EXISTS strategy_versions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id  TEXT NOT NULL,
+    code_hash    TEXT NOT NULL,
+    code         TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE CASCADE,
+    UNIQUE (strategy_id, code_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_versions_strategy
+    ON strategy_versions(strategy_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS runs (
     id               TEXT PRIMARY KEY,
     strategy_id      TEXT NOT NULL,
@@ -30,6 +47,9 @@ CREATE TABLE IF NOT EXISTS runs (
     oos_json         TEXT,
     dsr_json         TEXT,
     monte_carlo_json TEXT,
+    -- Phase 16.2: links a run to the exact strategy_versions row that
+    -- ran. Nullable for pre-16.2 runs; populated by every new backtest.
+    strategy_code_hash TEXT,
     FOREIGN KEY (strategy_id) REFERENCES strategies(id)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_strategy ON runs(strategy_id);

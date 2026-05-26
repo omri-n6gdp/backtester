@@ -83,6 +83,8 @@ class ScoredRun:
     # Sharpe used — surfaced so the UI can tooltip them next to the score.
     dsr: float | None = None
     oos_sharpe: float | None = None
+    # Phase 16.2 — code version this run was computed against.
+    strategy_code_hash: str | None = None
     # Per-strategy flag (Phase 15.4) — favourites pin to the top of the library.
     favourite: bool = False
 
@@ -235,6 +237,7 @@ def compute_run_scores(
             sharpe_source=sharpe_source,
             dsr=dsr,
             oos_sharpe=oos_sharpe,
+            strategy_code_hash=r.get("strategy_code_hash"),
             favourite=bool(r.get("favourite", False)),
         ))
     return out

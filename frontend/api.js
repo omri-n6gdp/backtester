@@ -100,6 +100,29 @@ export async function createStrategy(name, description, code) {
   return jsonOrThrow(res);
 }
 
+export async function updateStrategy(strategyId, name, description, code) {
+  // Phase 16.2 — replace a strategy's name/description/code. A new
+  // strategy_versions row is created server-side when the code hash is new.
+  const res = await fetch(`${API_BASE}/strategies/${encodeURIComponent(strategyId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, code }),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function listStrategyVersions(strategyId) {
+  const res = await fetch(`${API_BASE}/strategies/${encodeURIComponent(strategyId)}/versions`);
+  return jsonOrThrow(res);
+}
+
+export async function getStrategyVersion(strategyId, codeHash) {
+  const res = await fetch(
+    `${API_BASE}/strategies/${encodeURIComponent(strategyId)}/versions/${encodeURIComponent(codeHash)}`
+  );
+  return jsonOrThrow(res);
+}
+
 export async function getLibrary(filters = {}) {
   const qs = new URLSearchParams();
   if (filters.strategy_id) qs.set('strategy_id', filters.strategy_id);

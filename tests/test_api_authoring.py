@@ -98,3 +98,108 @@ def test_translate_strategy_groq_failure_returns_502(api_client, monkeypatch):
     resp = api_client.post("/strategies/translate", json={"description": "anything"})
     assert resp.status_code == 502, resp.text
     assert "groq down" in resp.json()["detail"].lower() or "LLM translation failed" in resp.json()["detail"]
+
+
+# ---- Phase 16.2 — strategy versioning ----------------------------------
+
+UPDATED_CODE = """
+import pandas as pd
+
+def strategy(data, params):
+    # Faster crossover than GOOD_CODE — different code, so a new version.
+    return (data['close'].rolling(3).mean() > data['close'].rolling(10).mean()).astype(float)
+"""
+
+
+def _create_strategy(api_client, name="V test"):
+    resp = api_client.post(
+        "/strategies",
+        json={"name": name, "description": "", "code": GOOD_CODE},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_create_strategy_returns_code_hash_and_inserts_initial_version(api_client):
+    body = _create_strategy(api_client)
+    assert body["code_hash"] is not None
+    sid = body["strategy_id"]
+
+    versions = api_client.get(f"/strategies/{sid}/versions").json()
+    assert versions["current_hash"] == body["code_hash"]
+    assert len(versions["versions"]) == 1
+    assert versions["versions"][0]["is_current"] is True
+
+
+def test_update_strategy_creates_new_version(api_client):
+    body = _create_strategy(api_client)
+    sid, original_hash = body["strategy_id"], body["code_hash"]
+
+    upd = api_client.put(
+        f"/strategies/{sid}",
+        json={"name": "renamed", "description": "edited", "code": UPDATED_CODE},
+    )
+    assert upd.status_code == 200, upd.text
+    new_hash = upd.json()["code_hash"]
+    assert new_hash != original_hash
+
+    versions = api_client.get(f"/strategies/{sid}/versions").json()
+    assert versions["current_hash"] == new_hash
+    assert len(versions["versions"]) == 2
+    hashes = [v["code_hash"] for v in versions["versions"]]
+    assert hashes == [new_hash, original_hash]  # newest first
+
+
+def test_update_strategy_with_identical_code_is_version_noop(api_client):
+    body = _create_strategy(api_client)
+    sid, original_hash = body["strategy_id"], body["code_hash"]
+
+    upd = api_client.put(
+        f"/strategies/{sid}",
+        json={"name": "renamed", "description": "edited", "code": GOOD_CODE},
+    )
+    assert upd.status_code == 200
+    assert upd.json()["code_hash"] == original_hash
+
+    versions = api_client.get(f"/strategies/{sid}/versions").json()
+    assert len(versions["versions"]) == 1
+
+
+def test_update_unknown_strategy_404(api_client):
+    resp = api_client.put(
+        "/strategies/nope",
+        json={"name": "x", "description": "", "code": GOOD_CODE},
+    )
+    assert resp.status_code == 404
+
+
+def test_update_rejects_invalid_code(api_client):
+    body = _create_strategy(api_client)
+    sid = body["strategy_id"]
+    resp = api_client.put(
+        f"/strategies/{sid}",
+        json={"name": "x", "description": "", "code": "import os\n"},
+    )
+    assert resp.status_code == 400
+
+
+def test_get_strategy_version_round_trip(api_client):
+    body = _create_strategy(api_client)
+    sid, original_hash = body["strategy_id"], body["code_hash"]
+    api_client.put(
+        f"/strategies/{sid}",
+        json={"name": "x", "description": "", "code": UPDATED_CODE},
+    )
+
+    # The old version's code is still retrievable by its hash.
+    detail = api_client.get(f"/strategies/{sid}/versions/{original_hash}").json()
+    assert detail["code_hash"] == original_hash
+    assert detail["is_current"] is False
+    assert "def strategy" in detail["code"]
+
+
+def test_get_strategy_detail_includes_current_hash(api_client):
+    body = _create_strategy(api_client)
+    sid = body["strategy_id"]
+    detail = api_client.get(f"/strategies/{sid}").json()
+    assert detail["code_hash"] == body["code_hash"]

@@ -30,6 +30,10 @@ from backend.api.schemas import (
     DeploymentRunHistoryEntry,
     DeploymentRunResponse,
     DeploymentTrackingResponse,
+    StrategyUpdateRequest,
+    StrategyVersionDetail,
+    StrategyVersionEntry,
+    StrategyVersionsResponse,
     EventDrivenBacktestRequest,
     FavouriteRequest,
     StopConfigModel,
@@ -375,10 +379,64 @@ def create_strategy(req: StrategyCreateRequest) -> StrategyCreateResponse:
             code_path=str(code_path),
             created_at=created_at,
         )
+        # Phase 16.2 — record the initial version.
+        code_hash, _ = repo.insert_strategy_version(
+            conn, strategy_id=strategy_id, code=req.code, created_at=created_at,
+        )
 
     return StrategyCreateResponse(
         strategy_id=strategy_id,
         validation_result=_validation_result_to_model(vresult),
+        code_hash=code_hash,
+    )
+
+
+@router.put("/strategies/{strategy_id}", response_model=StrategyCreateResponse)
+def update_strategy_route(
+    strategy_id: str, req: StrategyUpdateRequest,
+) -> StrategyCreateResponse:
+    """Phase 16.2 — replace a strategy's name, description, and code.
+    Inserts a new strategy_versions row when the code hash is new;
+    identical code is a no-op for the versions table but still updates
+    the display metadata."""
+    vresult = validate_strategy(req.code)
+    if not vresult.ok:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "strategy validation failed",
+                "errors": list(vresult.errors),
+                "warnings": list(getattr(vresult, "warnings", []) or []),
+            },
+        )
+
+    with connect() as conn:
+        row = repo.get_strategy(conn, strategy_id)
+    if row is None or row["active"] == 0:
+        raise HTTPException(status_code=404, detail="strategy not found")
+
+    # Write the new code to disk first; if anything below fails, the
+    # earlier version row in strategy_versions is the safety net.
+    code_path = Path(row["code_path"])
+    code_path.parent.mkdir(parents=True, exist_ok=True)
+    code_path.write_text(req.code, encoding="utf-8")
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    with connect() as conn:
+        repo.update_strategy_meta(
+            conn,
+            strategy_id=strategy_id,
+            name=req.name,
+            description=req.description,
+        )
+        code_hash, _ = repo.insert_strategy_version(
+            conn, strategy_id=strategy_id, code=req.code, created_at=updated_at,
+        )
+
+    return StrategyCreateResponse(
+        strategy_id=strategy_id,
+        validation_result=_validation_result_to_model(vresult),
+        code_hash=code_hash,
     )
 
 
@@ -423,6 +481,7 @@ def list_strategies() -> list[StrategySummary]:
 def get_strategy(strategy_id: str) -> StrategyDetail:
     with connect() as conn:
         row = repo.get_strategy(conn, strategy_id)
+        current_hash = repo.get_latest_strategy_version_hash(conn, strategy_id) if row else None
     if row is None or row["active"] == 0:
         raise HTTPException(status_code=404, detail="strategy not found")
     code_path = Path(row["code_path"])
@@ -436,6 +495,58 @@ def get_strategy(strategy_id: str) -> StrategyDetail:
         created_at=row["created_at"],
         favourite=bool(row["favourite"]),
         code=code,
+        code_hash=current_hash,
+    )
+
+
+# -------- /strategies/{id}/versions (Phase 16.2) --------
+
+@router.get("/strategies/{strategy_id}/versions", response_model=StrategyVersionsResponse)
+def list_strategy_versions_route(strategy_id: str) -> StrategyVersionsResponse:
+    """Most-recent-first version history of a strategy's code."""
+    with connect() as conn:
+        row = repo.get_strategy(conn, strategy_id)
+        if row is None or row["active"] == 0:
+            raise HTTPException(status_code=404, detail="strategy not found")
+        rows = repo.list_strategy_versions(conn, strategy_id)
+    current_hash = rows[0]["code_hash"] if rows else None
+    return StrategyVersionsResponse(
+        strategy_id=strategy_id,
+        current_hash=current_hash,
+        versions=[
+            StrategyVersionEntry(
+                id=r["id"],
+                code_hash=r["code_hash"],
+                created_at=r["created_at"],
+                is_current=(r["code_hash"] == current_hash),
+            )
+            for r in rows
+        ],
+    )
+
+
+@router.get(
+    "/strategies/{strategy_id}/versions/{code_hash}",
+    response_model=StrategyVersionDetail,
+)
+def get_strategy_version_route(
+    strategy_id: str, code_hash: str,
+) -> StrategyVersionDetail:
+    """Fetch the code body of a single historical version."""
+    with connect() as conn:
+        strat = repo.get_strategy(conn, strategy_id)
+        if strat is None or strat["active"] == 0:
+            raise HTTPException(status_code=404, detail="strategy not found")
+        row = repo.get_strategy_version_code(conn, strategy_id, code_hash)
+        if row is None:
+            raise HTTPException(status_code=404, detail="version not found")
+        current_hash = repo.get_latest_strategy_version_hash(conn, strategy_id)
+    return StrategyVersionDetail(
+        strategy_id=strategy_id,
+        code_hash=row["code_hash"],
+        code=row["code"],
+        created_at=row["created_at"],
+        is_current=(row["code_hash"] == current_hash),
     )
 
 
@@ -659,6 +770,7 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
             oos_json=json.dumps(oos_payload) if oos_payload is not None else None,
             dsr_json=json.dumps(dsr_payload) if dsr_payload is not None else None,
             monte_carlo_json=json.dumps(mc_payload) if mc_payload is not None else None,
+            strategy_code_hash=repo.hash_strategy_code(code),
         )
         repo.insert_metrics(conn, run_id=run_id, metrics_json=json.dumps(metrics_dict))
         repo.insert_curves(
@@ -708,6 +820,7 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
         monte_carlo=mc_response,
         deflated_sharpe=ds_response,
         regimes=regimes_response,
+        strategy_code_hash=repo.hash_strategy_code(code),
     )
 
 # -------- /backtest/walk_forward --------
@@ -829,6 +942,7 @@ def run_walk_forward_route(req: WalkForwardRequest) -> WalkForwardResponse:
             starting_capital=req.starting_capital,
             bars_per_year=req.bars_per_year,
             created_at=created_at,
+            strategy_code_hash=repo.hash_strategy_code(code),
         )
         repo.insert_metrics(conn, run_id=run_id, metrics_json=json.dumps(oos_metrics_dict))
         repo.insert_curves(
@@ -985,6 +1099,7 @@ def run_sweep_route(req: SweepRequest) -> SweepResponse:
             starting_capital=req.starting_capital,
             bars_per_year=req.bars_per_year,
             created_at=created_at,
+            strategy_code_hash=repo.hash_strategy_code(code),
         )
         repo.insert_metrics(conn, run_id=run_id, metrics_json=json.dumps(best_metrics))
 
@@ -1101,6 +1216,7 @@ def library_route(
             sharpe_source=s.sharpe_source,
             dsr=s.dsr,
             oos_sharpe=s.oos_sharpe,
+            strategy_code_hash=s.strategy_code_hash,
         )
         for s in scored
     ])
@@ -1197,6 +1313,7 @@ def run_event_driven_route(req: EventDrivenBacktestRequest) -> BacktestResponse:
             starting_capital=req.starting_capital,
             bars_per_year=req.bars_per_year,
             created_at=created_at,
+            strategy_code_hash=repo.hash_strategy_code(code),
         )
         repo.insert_metrics(conn, run_id=run_id, metrics_json=json.dumps(metrics_dict))
         repo.insert_curves(
@@ -1242,6 +1359,7 @@ def run_event_driven_route(req: EventDrivenBacktestRequest) -> BacktestResponse:
         monte_carlo=None,
         deflated_sharpe=None,
         regimes=None,
+        strategy_code_hash=repo.hash_strategy_code(code),
     )
 
 
@@ -1452,6 +1570,7 @@ def get_run_route(run_id: str) -> BacktestResponse:
         monte_carlo=mc_model,
         deflated_sharpe=dsr_model,
         regimes=None,
+        strategy_code_hash=run_row.get("strategy_code_hash"),
     )
 
 

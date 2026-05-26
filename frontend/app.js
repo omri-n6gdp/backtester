@@ -14,7 +14,8 @@ import { oneDark } from '@codemirror/theme-one-dark';
 
 import {
   getHealth, listStrategies, runBacktest, runSweep, runEventDriven,
-  validateStrategy, translateStrategy, createStrategy, setStrategyFavourite,
+  validateStrategy, translateStrategy, createStrategy, updateStrategy,
+  getStrategy, setStrategyFavourite,
   getLibrary, getRun,
   getT212Account, getT212Positions, getT212Orders, getT212Pies,
   listDeployments, createDeployment, armDeployment, disarmDeployment,
@@ -321,7 +322,7 @@ function FullMetricsTable({ result }) {
 }
 
 function Sidebar({ strategies, selectedId, onSelect, loading, error, onRefresh,
-                   onNewStrategy, onToggleFavourite }) {
+                   onNewStrategy, onToggleFavourite, onEditStrategy }) {
   return html`
     <aside class="w-72 shrink-0 border-r border-ink-700 bg-ink-900 flex flex-col">
       <div class="px-4 py-3 border-b border-ink-700 flex items-center justify-between">
@@ -356,6 +357,9 @@ function Sidebar({ strategies, selectedId, onSelect, loading, error, onRefresh,
                   ${s.description && html`<div class="text-xs text-mute-400 truncate mt-0.5">${s.description}</div>`}
                   <div class="text-[10px] text-mute-400 num mt-1">${s.id.slice(0,8)}…</div>
                 </button>
+                <button onClick=${(e) => { e.stopPropagation(); onEditStrategy(s); }}
+                  class="shrink-0 px-2 text-sm leading-none text-mute-500 hover:text-accent-400 transition"
+                  title="Edit strategy">✎</button>
                 <button onClick=${() => onToggleFavourite(s)}
                   class="shrink-0 px-3 text-lg leading-none transition
                          ${s.favourite ? 'text-yellow-400' : 'text-mute-600 hover:text-mute-300'}"
@@ -1321,7 +1325,10 @@ function ValidationPanel({ result }) {
   `;
 }
 
-function AuthorView({ onCancel, onSaved }) {
+function AuthorView({ onCancel, onSaved, editingStrategyId = null }) {
+  // Phase 16.2 — when `editingStrategyId` is set, the form prefills from
+  // the existing strategy and Save calls PUT instead of POST. A new
+  // version row is created server-side only when the code hash changes.
   const pushToast = useToast();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -1331,8 +1338,38 @@ function AuthorView({ onCancel, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [authorError, setAuthorError] = useState(null);
+  const [prefillLoading, setPrefillLoading] = useState(!!editingStrategyId);
+  const [currentHash, setCurrentHash] = useState(null);
 
   const editorRef = useRef(null);
+  const isEditing = !!editingStrategyId;
+
+  // Load existing strategy when in edit mode. CodeMirror's editor mounts
+  // separately (see the existing wiring below) and we set its value once
+  // both this fetch and the editor are ready.
+  const pendingPrefillRef = useRef(null);
+  useEffect(() => {
+    if (!editingStrategyId) return;
+    let live = true;
+    getStrategy(editingStrategyId)
+      .then(detail => {
+        if (!live) return;
+        setName(detail.name || '');
+        setDescription(detail.description || '');
+        setCurrentHash(detail.code_hash || null);
+        pendingPrefillRef.current = detail.code || '';
+        // If the editor is already mounted, write into it now.
+        editorRef.current?.setValue(detail.code || '');
+        setPrefillLoading(false);
+      })
+      .catch(err => {
+        if (!live) return;
+        setAuthorError(`Could not load strategy: ${err.message}`);
+        pushToast('error', `Could not load strategy: ${err.message}`);
+        setPrefillLoading(false);
+      });
+    return () => { live = false; };
+  }, [editingStrategyId]);
 
   const handleGenerate = async () => {
     if (!englishPrompt.trim()) return;
@@ -1391,9 +1428,20 @@ function AuthorView({ onCancel, onSaved }) {
         setSaving(false);
         return;
       }
-      const created = await createStrategy(name.trim(), description.trim(), code);
-      pushToast('success', `Saved strategy "${name.trim()}".`);
-      onSaved(created.strategy_id);
+      // Phase 16.2 — edit mode uses PUT; new-strategy mode uses POST.
+      const saved = isEditing
+        ? await updateStrategy(editingStrategyId, name.trim(), description.trim(), code)
+        : await createStrategy(name.trim(), description.trim(), code);
+      const versionChanged = isEditing && saved.code_hash !== currentHash;
+      pushToast(
+        'success',
+        isEditing
+          ? versionChanged
+            ? `Saved "${name.trim()}" as a new version.`
+            : `Saved "${name.trim()}" (no code change).`
+          : `Saved strategy "${name.trim()}".`,
+      );
+      onSaved(saved.strategy_id);
     } catch (err) {
       setAuthorError(err.message);
       pushToast('error', `Save failed: ${err.message}`);
@@ -1402,14 +1450,16 @@ function AuthorView({ onCancel, onSaved }) {
     }
   };
 
-  const busy = generating || validating || saving;
+  const busy = generating || validating || saving || prefillLoading;
 
   return html`
     <div class="p-6 max-w-5xl mx-auto space-y-5">
       <div class="flex items-baseline justify-between">
         <div>
-          <div class="text-xs uppercase tracking-wider text-mute-400">New strategy</div>
-          <div class="text-lg text-mute-100 font-medium mt-0.5">Author a strategy</div>
+          <div class="text-xs uppercase tracking-wider text-mute-400">${isEditing ? 'Edit strategy' : 'New strategy'}</div>
+          <div class="text-lg text-mute-100 font-medium mt-0.5">
+            ${isEditing ? (name || 'Edit strategy') : 'Author a strategy'}
+          </div>
         </div>
         <button onClick=${onCancel} disabled=${busy}
           class="text-sm text-mute-300 hover:text-mute-100 transition px-2 py-1 ${busy ? 'opacity-50 cursor-not-allowed' : ''}">
@@ -1452,9 +1502,16 @@ function AuthorView({ onCancel, onSaved }) {
       </div>
 
       <div>
-        <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">Strategy code (Python)</div>
+        <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">
+          Strategy code (Python)
+          ${isEditing && currentHash && html`<span class="ml-2 text-[10px] normal-case text-mute-500 num">current: ${currentHash.slice(0, 8)}</span>`}
+        </div>
         <div class="h-[420px] border border-ink-700 rounded overflow-hidden">
-          <${CodeEditor} initialValue=${STRATEGY_TEMPLATE} editorRef=${editorRef} />
+          ${prefillLoading
+            ? html`<div class="h-full flex items-center justify-center text-mute-400 text-sm">Loading strategy…</div>`
+            : html`<${CodeEditor}
+                initialValue=${isEditing ? (pendingPrefillRef.current ?? '') : STRATEGY_TEMPLATE}
+                editorRef=${editorRef} />`}
         </div>
       </div>
 
@@ -3082,6 +3139,9 @@ function App() {
 
   // Top-level view: 'run' (backtest/sweep) or 'author' (new strategy).
   const [view, setView] = useState('run');
+  // Phase 16.2 — non-null when the AuthorView should open in edit mode.
+  // Cleared whenever the user navigates away from the author view.
+  const [editingStrategyId, setEditingStrategyId] = useState(null);
 
   const [config, setConfig] = useState({
     ticker: 'SPY', timeframe: '1d',
@@ -3396,6 +3456,7 @@ function App() {
           </div>
           <div class="flex items-center gap-3">
             <div class="text-xs text-mute-400 num">run ${result.run_id.slice(0,8)}…</div>
+            ${result.strategy_code_hash && html`<div class="text-xs text-mute-500 num" title="Strategy code version this run ran against">v ${result.strategy_code_hash.slice(0, 8)}</div>`}
             <button onClick=${handlePin} disabled=${!canPin}
               class="text-xs px-3 py-1 rounded transition
                      ${!canPin
@@ -3510,16 +3571,20 @@ function App() {
         <${Sidebar}
           strategies=${strategies} selectedId=${selectedId} onSelect=${setSelectedId}
           loading=${stratLoading} error=${stratError} onRefresh=${refreshStrategies}
-          onNewStrategy=${() => setView('author')} onToggleFavourite=${onToggleFavourite} />
+          onNewStrategy=${() => { setEditingStrategyId(null); setView('author'); }}
+          onEditStrategy=${(s) => { setEditingStrategyId(s.id); setView('author'); }}
+          onToggleFavourite=${onToggleFavourite} />
 
         <main class="flex-1 min-w-0 overflow-y-auto bg-ink-950">
           ${view === 'author'
             ? html`<${AuthorView}
-                onCancel=${() => setView('run')}
+                editingStrategyId=${editingStrategyId}
+                onCancel=${() => { setEditingStrategyId(null); setView('run'); }}
                 onSaved=${async (newId) => {
                   const list = await listStrategies();
                   setStrategies(list);
                   setSelectedId(newId);
+                  setEditingStrategyId(null);
                   setView('run');
                 }} />`
             : view === 'library'
