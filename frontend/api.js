@@ -163,6 +163,12 @@ export async function getRun(runId) {
   return jsonOrThrow(res);
 }
 
+export async function getRunSnapshots(runId) {
+  // Phase 17.3 — year-by-year cumulative metrics for a stored run.
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/snapshots`);
+  return jsonOrThrow(res);
+}
+
 export async function patchRunAnnotations(runId, { notes, tags } = {}) {
   // Phase 16.3 — update a run's notes / tags. Omitted fields are
   // server-side untouched; explicit null clears.

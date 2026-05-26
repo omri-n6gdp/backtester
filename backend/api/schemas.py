@@ -233,6 +233,24 @@ class BenchmarkCatalogResponse(BaseModel):
     benchmarks: list[BenchmarkCatalogEntry]
 
 
+# Phase 17.3 — as-of-date snapshots.
+class YearSnapshotModel(BaseModel):
+    """One calendar year's view of cumulative metrics."""
+    year: int
+    year_end: str
+    n_bars: int
+    total_return_to_date: float
+    cagr_to_date: float
+    sharpe_to_date: float
+    max_drawdown_to_date: float
+    win_rate_to_date: float
+
+
+class RunSnapshotsResponse(BaseModel):
+    run_id: str
+    snapshots: list[YearSnapshotModel]
+
+
 class StopConfigModel(BaseModel):
     """Mirror of backend.engine.event_driven.StopConfig.
 

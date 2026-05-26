@@ -50,6 +50,8 @@ from backend.api.schemas import (
     BenchmarkCatalogEntry,
     BenchmarkCatalogResponse,
     BenchmarkCurveModel,
+    RunSnapshotsResponse,
+    YearSnapshotModel,
     MultiAssetResultModel,
     MultiTickerAggregateModel,
     MultiTickerRequest,
@@ -1730,6 +1732,45 @@ def t212_pies_route() -> list[dict[str, Any]]:
     return _handle_t212_call(
         _t212_cached, "pies", T212_CACHE_TTL_SECONDS["pies"],
         t212_client.get_pies,
+    )
+
+
+@router.get("/runs/{run_id}/snapshots", response_model=RunSnapshotsResponse)
+def get_run_snapshots_route(run_id: str) -> RunSnapshotsResponse:
+    """Phase 17.3 — year-by-year cumulative metrics for a stored run.
+
+    Computed lazily from the run's persisted equity / returns curves
+    (no extra storage needed). 404 when the run id is unknown."""
+    with connect() as conn:
+        run_row = repo.get_run(conn, run_id)
+        if run_row is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        curves = repo.get_curves(conn, run_id)
+    if curves is None:
+        raise HTTPException(status_code=410, detail="run curves missing on disk")
+
+    from backend.engine.snapshot import compute_yearly_snapshots
+    snaps = compute_yearly_snapshots(
+        timestamps=curves["timestamps"],
+        equity=curves["equity"],
+        returns=curves["returns"],
+        bars_per_year=run_row.get("bars_per_year") or 252,
+    )
+    return RunSnapshotsResponse(
+        run_id=run_id,
+        snapshots=[
+            YearSnapshotModel(
+                year=s.year,
+                year_end=s.year_end,
+                n_bars=s.n_bars,
+                total_return_to_date=s.total_return_to_date,
+                cagr_to_date=s.cagr_to_date,
+                sharpe_to_date=s.sharpe_to_date,
+                max_drawdown_to_date=s.max_drawdown_to_date,
+                win_rate_to_date=s.win_rate_to_date,
+            )
+            for s in snaps
+        ],
     )
 
 

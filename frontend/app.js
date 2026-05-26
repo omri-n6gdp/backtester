@@ -17,7 +17,7 @@ import {
   runMultiTicker, getBenchmarkCatalog,
   validateStrategy, translateStrategy, createStrategy, updateStrategy,
   forkStrategy, getStrategy, setStrategyFavourite,
-  getLibrary, getRun, patchRunAnnotations,
+  getLibrary, getRun, getRunSnapshots, patchRunAnnotations,
   getT212Account, getT212Positions, getT212Orders, getT212Pies,
   listDeployments, createDeployment, armDeployment, disarmDeployment,
   runDeployment, getDeploymentTracking, getDeploymentRunsFeed,
@@ -1638,6 +1638,95 @@ function AuthorView({ onCancel, onSaved, editingStrategyId = null }) {
     </div>
   `;
 }
+
+// ---- EdgeOverTimePanel (Phase 17.3) --------------------------------
+//
+// Lazy-loaded "as-of-date" snapshot table. For each calendar year the
+// run covers, shows what the run's cumulative metrics looked like
+// through that year-end. The user clicks "Load" to fetch — keeps the
+// initial backtest response light. Cached locally so a second click
+// doesn't re-fetch.
+
+function EdgeOverTimePanel({ runId }) {
+  const [snapshots, setSnapshots] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const pushToast = useToast();
+
+  // Reset when the run id changes (e.g. a new backtest).
+  useEffect(() => { setSnapshots(null); setError(null); }, [runId]);
+
+  const load = async () => {
+    if (!runId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const body = await getRunSnapshots(runId);
+      setSnapshots(body.snapshots || []);
+    } catch (err) {
+      setError(err.message);
+      pushToast('error', `Snapshot load failed: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return html`
+    <div>
+      <div class="flex items-baseline justify-between mb-2">
+        <div class="text-xs uppercase tracking-wider text-mute-400">
+          Edge over time
+          <span class="normal-case text-mute-500"> — cumulative metrics through each year-end</span>
+        </div>
+        ${snapshots === null && html`
+          <button onClick=${load} disabled=${loading}
+            class="text-xs px-3 py-1 rounded font-medium transition
+                   ${loading ? 'bg-ink-700 text-mute-400 cursor-not-allowed' : 'bg-ink-800 hover:bg-ink-700 text-mute-100'}">
+            ${loading ? 'Loading…' : 'Load snapshots'}
+          </button>
+        `}
+      </div>
+      ${error && html`
+        <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
+          ${error}
+        </div>`}
+      ${snapshots && snapshots.length === 0 && html`
+        <div class="bg-ink-900 border border-ink-700 rounded p-4 text-center text-mute-400 text-sm">
+          No yearly snapshots available for this run.
+        </div>`}
+      ${snapshots && snapshots.length > 0 && html`
+        <div class="bg-ink-900 border border-ink-700 rounded overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-ink-700 text-mute-400 text-xs">
+                <th class="py-2 px-3 text-left font-medium">Year-end</th>
+                <th class="py-2 px-3 text-right font-medium">Bars</th>
+                <th class="py-2 px-3 text-right font-medium">Total return</th>
+                <th class="py-2 px-3 text-right font-medium">CAGR-to-date</th>
+                <th class="py-2 px-3 text-right font-medium">Sharpe-to-date</th>
+                <th class="py-2 px-3 text-right font-medium">Max DD-to-date</th>
+                <th class="py-2 px-3 text-right font-medium">Win rate (bars)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${snapshots.map(s => html`
+                <tr key=${s.year} class="border-t border-ink-800">
+                  <td class="py-2 px-3 num text-mute-200">${s.year_end?.slice(0, 10) ?? s.year}</td>
+                  <td class="py-2 px-3 text-right num text-mute-400">${s.n_bars}</td>
+                  <td class="py-2 px-3 text-right num ${s.total_return_to_date > 0 ? 'text-accent-400' : 'text-danger-500'}">${fmtPct(s.total_return_to_date)}</td>
+                  <td class="py-2 px-3 text-right num ${s.cagr_to_date > 0 ? 'text-accent-400' : 'text-danger-500'}">${fmtPct(s.cagr_to_date)}</td>
+                  <td class="py-2 px-3 text-right num text-mute-100">${fmtNum(s.sharpe_to_date, 2)}</td>
+                  <td class="py-2 px-3 text-right num text-danger-500">${fmtPct(s.max_drawdown_to_date)}</td>
+                  <td class="py-2 px-3 text-right num text-mute-200">${fmtPct(s.win_rate_to_date)}</td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+        </div>`}
+    </div>
+  `;
+}
+
 
 // ---- MultiTickerResult (Phase 17.1) --------------------------------
 //
@@ -3857,6 +3946,8 @@ function App() {
         <div class="text-xs uppercase tracking-wider text-mute-400 mb-3">All metrics</div>
         <${FullMetricsTable} result=${result} />
       </div>
+
+      <${EdgeOverTimePanel} runId=${result.run_id} />
 
       <div class="border-t border-ink-700 pt-6">
         <${OptimiseSection}
