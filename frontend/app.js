@@ -16,7 +16,7 @@ import {
   getHealth, listStrategies, runBacktest, runSweep, runEventDriven,
   validateStrategy, translateStrategy, createStrategy, updateStrategy,
   getStrategy, setStrategyFavourite,
-  getLibrary, getRun,
+  getLibrary, getRun, patchRunAnnotations,
   getT212Account, getT212Positions, getT212Orders, getT212Pies,
   listDeployments, createDeployment, armDeployment, disarmDeployment,
   runDeployment, getDeploymentTracking, getDeploymentRunsFeed,
@@ -1539,6 +1539,65 @@ function AuthorView({ onCancel, onSaved, editingStrategyId = null }) {
   `;
 }
 
+// ---- RunAnnotationsEditor (Phase 16.3) -----------------------------
+//
+// Inline notes textarea + comma-separated tag input. Stays open while
+// editing; Save POSTs PATCH /runs/{id} and lifts the result back so the
+// parent table can reflect it without a refetch.
+
+function RunAnnotationsEditor({ run, onSaved }) {
+  const pushToast = useToast();
+  const [notes, setNotes] = useState(run.notes ?? '');
+  const [tagsText, setTagsText] = useState((run.tags || []).join(', '));
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const tagsList = tagsText.split(',').map(t => t.trim()).filter(Boolean);
+      const resp = await patchRunAnnotations(run.run_id, {
+        notes: notes.trim() ? notes : null,
+        tags: tagsList,
+      });
+      onSaved(resp);
+      pushToast('success', 'Annotations saved.');
+    } catch (err) {
+      pushToast('error', `Save failed: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return html`
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div>
+        <div class="text-[10px] uppercase tracking-wider text-mute-400 mb-1">Notes</div>
+        <textarea rows="3"
+          class="w-full bg-ink-900 border border-ink-700 rounded px-2 py-1 text-sm text-mute-100 focus:outline-none focus:border-accent-500 resize-none"
+          placeholder="Free text — e.g. 'fragile, depends on covid rally'"
+          value=${notes}
+          onChange=${e => setNotes(e.target.value)} />
+      </div>
+      <div>
+        <div class="text-[10px] uppercase tracking-wider text-mute-400 mb-1">Tags (comma-separated)</div>
+        <input type="text"
+          class="w-full bg-ink-900 border border-ink-700 rounded px-2 py-1 text-sm num text-mute-100 focus:outline-none focus:border-accent-500"
+          placeholder="e.g. fragile, needs-review"
+          value=${tagsText}
+          onChange=${e => setTagsText(e.target.value)} />
+        <div class="mt-2 flex gap-2 justify-end">
+          <button onClick=${handleSave} disabled=${saving}
+            class="text-xs px-3 py-1 rounded font-medium transition
+                   ${saving ? 'bg-ink-700 text-mute-400 cursor-not-allowed' : 'bg-accent-500 hover:bg-accent-400 text-ink-950'}">
+            ${saving ? 'Saving…' : 'Save annotations'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
 // ---- LibraryView (Phase 8) -----------------------------------------
 
 function LibraryView({ onOpenRun, onClose }) {
@@ -1549,6 +1608,10 @@ function LibraryView({ onOpenRun, onClose }) {
   const [sortKey, setSortKey] = useState('score');
   const [sortAsc, setSortAsc] = useState(false);
   const [tickerFilter, setTickerFilter] = useState('');
+  const [tagFilter, setTagFilter] = useState('');
+  // Phase 16.3 — which run's notes/tags row is expanded. Only one at a
+  // time (mobile-style accordion) to keep the table scannable.
+  const [expandedId, setExpandedId] = useState(null);
 
   useEffect(() => {
     let live = true;
@@ -1568,12 +1631,31 @@ function LibraryView({ onOpenRun, onClose }) {
     return runs.map(r => ({ ...r, score: compositeScore(r, weights) }));
   }, [runs, weights]);
 
+  // Phase 16.3 — distinct set of tags across all loaded runs, for the
+  // filter chip strip.
+  const allTags = useMemo(() => {
+    if (!runs) return [];
+    const counts = new Map();
+    for (const r of runs) for (const t of (r.tags || [])) counts.set(t, (counts.get(t) || 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t, n]) => ({ tag: t, n }));
+  }, [runs]);
+
   const filtered = useMemo(() => {
     if (!scored) return null;
     const q = tickerFilter.trim().toUpperCase();
-    if (!q) return scored;
-    return scored.filter(r => r.ticker.toUpperCase().includes(q));
-  }, [scored, tickerFilter]);
+    const tag = tagFilter.trim().toLowerCase();
+    let arr = scored;
+    if (q) arr = arr.filter(r => r.ticker.toUpperCase().includes(q));
+    if (tag) arr = arr.filter(r => (r.tags || []).includes(tag));
+    return arr;
+  }, [scored, tickerFilter, tagFilter]);
+
+  // Save edits locally so the row reflects the change without a refetch.
+  const handleAnnotationSaved = (runId, updated) => {
+    setRuns(prev => prev?.map(
+      r => r.run_id === runId ? { ...r, notes: updated.notes, tags: updated.tags } : r
+    ));
+  };
 
   const sorted = useMemo(() => {
     if (!filtered) return null;
@@ -1667,7 +1749,7 @@ function LibraryView({ onOpenRun, onClose }) {
       </div>
 
       <!-- Filter -->
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3 flex-wrap">
         <div class="text-xs text-mute-400">Filter by ticker</div>
         <input type="text" placeholder="e.g. SPY"
           class="bg-ink-850 border border-ink-700 rounded px-2 py-1 text-sm num text-mute-100 w-32 focus:outline-none focus:border-accent-500"
@@ -1676,6 +1758,22 @@ function LibraryView({ onOpenRun, onClose }) {
         ${tickerFilter && html`
           <button onClick=${() => setTickerFilter('')}
             class="text-xs text-mute-400 hover:text-mute-100">clear</button>
+        `}
+        ${allTags.length > 0 && html`
+          <div class="text-xs text-mute-400 ml-4">Filter by tag</div>
+          ${allTags.map(({ tag, n }) => html`
+            <button key=${tag} onClick=${() => setTagFilter(tagFilter === tag ? '' : tag)}
+              class="text-xs px-2 py-0.5 rounded-full transition num
+                     ${tagFilter === tag
+                       ? 'bg-accent-500 text-ink-950 font-semibold'
+                       : 'bg-ink-800 text-mute-200 hover:bg-ink-700'}">
+              ${tag} <span class="opacity-60">${n}</span>
+            </button>
+          `)}
+          ${tagFilter && html`
+            <button onClick=${() => setTagFilter('')}
+              class="text-xs text-mute-400 hover:text-mute-100">clear tag</button>
+          `}
         `}
       </div>
 
@@ -1698,6 +1796,7 @@ function LibraryView({ onOpenRun, onClose }) {
           <table class="w-full text-sm">
             <thead>
               <tr class="border-b border-ink-700">
+                <th class="w-6"></th>
                 ${header('strategy_name', 'Strategy')}
                 ${header('ticker', 'Ticker')}
                 ${header('timeframe', 'TF')}
@@ -1712,25 +1811,47 @@ function LibraryView({ onOpenRun, onClose }) {
             </thead>
             <tbody>
               ${sorted.map(r => html`
-                <tr key=${r.run_id}
-                  onClick=${() => onOpenRun(r.run_id)}
-                  class="border-t border-ink-800 hover:bg-ink-850 transition cursor-pointer">
-                  <td class="py-2 px-3 text-mute-100">
-                    ${r.favourite && html`<span class="text-yellow-400 mr-1" title="Favourite">★</span>`}
-                    ${r.strategy_name}${modeBadge(r.mode)}</td>
-                  <td class="py-2 px-3 num text-mute-200">${r.ticker}</td>
-                  <td class="py-2 px-3 num text-mute-400">${r.timeframe}</td>
-                  <td class="py-2 px-3 num text-mute-400 text-xs">${r.start_date.slice(0,10)} → ${r.end_date.slice(0,10)}</td>
-                  <td class="py-2 px-3 num text-mute-400 text-xs">${r.created_at?.slice(0,10) ?? '—'}</td>
-                  <td class="py-2 px-3 text-right num ${(r.metrics?.cagr ?? 0) > 0 ? 'text-accent-400' : 'text-danger-500'}">${fmtPct(r.metrics?.cagr)}</td>
-                  <td class="py-2 px-3 text-right num text-mute-100">
-                    ${fmtNum(r.metrics?.sharpe, 2)}
-                    ${r.sharpe_source === 'oos' && html`<span class="ml-1 text-[9px] text-accent-400 font-semibold align-top" title="Score uses persisted OOS Sharpe (${fmtNum(r.oos_sharpe, 2)})">OOS</span>`}
-                  </td>
-                  <td class="py-2 px-3 text-right num text-mute-200">${fmtNum(r.metrics?.calmar, 2)}</td>
-                  <td class="py-2 px-3 text-right num text-danger-500">${fmtPct(r.metrics?.max_drawdown)}</td>
-                  <td class="py-2 px-3 text-right num text-accent-400 font-semibold" title=${r.dsr !== null && r.dsr !== undefined ? `DSR ${fmtNum(r.dsr, 3)}` : 'DSR not persisted for this run'}>${(r.score * 100).toFixed(1)}</td>
-                </tr>
+                <${React.Fragment} key=${r.run_id}>
+                  <tr class="border-t border-ink-800 hover:bg-ink-850 transition">
+                    <td class="text-center text-mute-500 hover:text-mute-100 cursor-pointer select-none"
+                        onClick=${(e) => { e.stopPropagation(); setExpandedId(expandedId === r.run_id ? null : r.run_id); }}
+                        title="Expand notes / tags">
+                      ${expandedId === r.run_id ? '▾' : '▸'}
+                    </td>
+                    <td class="py-2 px-3 text-mute-100 cursor-pointer" onClick=${() => onOpenRun(r.run_id)}>
+                      ${r.favourite && html`<span class="text-yellow-400 mr-1" title="Favourite">★</span>`}
+                      ${r.strategy_name}${modeBadge(r.mode)}
+                      ${(r.tags || []).length > 0 && html`
+                        <span class="ml-2">${r.tags.map(t => html`
+                          <span key=${t} class="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-ink-700 text-mute-300 num">${t}</span>
+                        `)}</span>
+                      `}
+                    </td>
+                    <td class="py-2 px-3 num text-mute-200 cursor-pointer" onClick=${() => onOpenRun(r.run_id)}>${r.ticker}</td>
+                    <td class="py-2 px-3 num text-mute-400 cursor-pointer" onClick=${() => onOpenRun(r.run_id)}>${r.timeframe}</td>
+                    <td class="py-2 px-3 num text-mute-400 text-xs cursor-pointer" onClick=${() => onOpenRun(r.run_id)}>${r.start_date.slice(0,10)} → ${r.end_date.slice(0,10)}</td>
+                    <td class="py-2 px-3 num text-mute-400 text-xs cursor-pointer" onClick=${() => onOpenRun(r.run_id)}>${r.created_at?.slice(0,10) ?? '—'}</td>
+                    <td class="py-2 px-3 text-right num cursor-pointer ${(r.metrics?.cagr ?? 0) > 0 ? 'text-accent-400' : 'text-danger-500'}" onClick=${() => onOpenRun(r.run_id)}>${fmtPct(r.metrics?.cagr)}</td>
+                    <td class="py-2 px-3 text-right num text-mute-100 cursor-pointer" onClick=${() => onOpenRun(r.run_id)}>
+                      ${fmtNum(r.metrics?.sharpe, 2)}
+                      ${r.sharpe_source === 'oos' && html`<span class="ml-1 text-[9px] text-accent-400 font-semibold align-top" title="Score uses persisted OOS Sharpe (${fmtNum(r.oos_sharpe, 2)})">OOS</span>`}
+                    </td>
+                    <td class="py-2 px-3 text-right num text-mute-200 cursor-pointer" onClick=${() => onOpenRun(r.run_id)}>${fmtNum(r.metrics?.calmar, 2)}</td>
+                    <td class="py-2 px-3 text-right num text-danger-500 cursor-pointer" onClick=${() => onOpenRun(r.run_id)}>${fmtPct(r.metrics?.max_drawdown)}</td>
+                    <td class="py-2 px-3 text-right num text-accent-400 font-semibold cursor-pointer" onClick=${() => onOpenRun(r.run_id)}
+                        title=${r.dsr !== null && r.dsr !== undefined ? `DSR ${fmtNum(r.dsr, 3)}` : 'DSR not persisted for this run'}>${(r.score * 100).toFixed(1)}</td>
+                  </tr>
+                  ${expandedId === r.run_id && html`
+                    <tr class="bg-ink-850 border-t border-ink-800">
+                      <td></td>
+                      <td colspan="10" class="py-3 px-4">
+                        <${RunAnnotationsEditor}
+                          run=${r}
+                          onSaved=${(updated) => handleAnnotationSaved(r.run_id, updated)} />
+                      </td>
+                    </tr>
+                  `}
+                </${React.Fragment}>
               `)}
             </tbody>
           </table>

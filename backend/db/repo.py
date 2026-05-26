@@ -265,19 +265,58 @@ def insert_trades(conn: sqlite3.Connection, *, run_id: str, trades: list[dict[st
 
 def get_run(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
     """Returns the run row plus the optional Phase 16.1 OOS/DSR/MC
-    JSON blobs (still as strings — callers parse if they need them)
-    and the Phase 16.2 strategy_code_hash link."""
+    JSON blobs (still as strings — callers parse if they need them),
+    the Phase 16.2 strategy_code_hash link, and the Phase 16.3
+    notes/tags annotations."""
     row = conn.execute(
         """
         SELECT id, strategy_id, ticker, timeframe, start_date, end_date,
                params_json, cost_config_json, starting_capital, bars_per_year,
                created_at, oos_json, dsr_json, monte_carlo_json,
-               strategy_code_hash
+               strategy_code_hash, notes, tags
         FROM runs WHERE id = ?
         """,
         (run_id,),
     ).fetchone()
     return dict(row) if row else None
+
+
+# Phase 16.3 — tags are stored as a comma-separated normalized string.
+# Normalize once at the boundary so all downstream code can split on ",".
+def normalize_tags(raw: str | list[str] | None) -> str | None:
+    """Coerce tags input (a string or list) into a deduplicated,
+    lowercase, comma-separated string. Returns None for empty input."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        items = [t for t in raw.split(",")]
+    else:
+        items = list(raw)
+    seen: dict[str, None] = {}
+    for t in items:
+        cleaned = "".join(ch for ch in t.strip().lower() if ch.isalnum() or ch in "-_")
+        if cleaned:
+            seen.setdefault(cleaned, None)
+    if not seen:
+        return None
+    return ",".join(seen.keys())
+
+
+def update_run_notes_tags(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    notes: str | None,
+    tags: str | None,
+) -> bool:
+    """Phase 16.3 — overwrite a run's notes and/or tags. Both columns
+    are nullable; pass None to clear. Returns False when the run id
+    doesn't exist."""
+    cur = conn.execute(
+        "UPDATE runs SET notes = ?, tags = ? WHERE id = ?",
+        (notes, tags, run_id),
+    )
+    return cur.rowcount > 0
 
 
 def get_metrics(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
@@ -653,7 +692,7 @@ def list_runs_with_metrics(
                r.ticker, r.timeframe, r.start_date, r.end_date,
                r.params_json, r.created_at,
                r.oos_json, r.dsr_json, r.monte_carlo_json,
-               r.strategy_code_hash,
+               r.strategy_code_hash, r.notes, r.tags,
                m.metrics_json
         FROM runs r
         JOIN strategies s ON s.id = r.strategy_id
@@ -698,6 +737,9 @@ def list_runs_with_metrics(
             "monte_carlo": json.loads(r["monte_carlo_json"]) if r["monte_carlo_json"] else None,
             # Phase 16.2 — null for pre-migration runs.
             "strategy_code_hash": r["strategy_code_hash"],
+            # Phase 16.3 — annotations.
+            "notes": r["notes"],
+            "tags": r["tags"],
         })
     return out
 

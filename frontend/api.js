@@ -137,6 +137,20 @@ export async function getRun(runId) {
   return jsonOrThrow(res);
 }
 
+export async function patchRunAnnotations(runId, { notes, tags } = {}) {
+  // Phase 16.3 — update a run's notes / tags. Omitted fields are
+  // server-side untouched; explicit null clears.
+  const body = {};
+  if (notes !== undefined) body.notes = notes;
+  if (tags !== undefined) body.tags = tags;
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res);
+}
+
 // ---- T212 (Phase 10: read-only Demo) -----------------------------------
 
 export async function getT212Account() {

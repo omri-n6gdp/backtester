@@ -58,6 +58,8 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "dsr_json": "TEXT",            # Phase 16.1
         "monte_carlo_json": "TEXT",    # Phase 16.1
         "strategy_code_hash": "TEXT",  # Phase 16.2
+        "notes": "TEXT",               # Phase 16.3
+        "tags": "TEXT",                # Phase 16.3
     },
 }
 

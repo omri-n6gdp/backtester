@@ -147,6 +147,27 @@ class LibraryRunModel(BaseModel):
     oos_sharpe: float | None = None    # raw OOS Sharpe (annualized)
     # Phase 16.2 — code version this run ran against. Null for legacy.
     strategy_code_hash: str | None = None
+    # Phase 16.3 — user-supplied annotations.
+    notes: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class RunAnnotationRequest(BaseModel):
+    """Phase 16.3 — body for PATCH /runs/{id}. Field omission means
+    "leave alone"; explicit null clears. The route handler uses
+    `model_dump(exclude_unset=True)` to tell the two apart.
+    Tag values are normalized server-side."""
+    model_config = ConfigDict(extra="forbid")
+
+    notes: str | None = None
+    tags: list[str] | None = None
+
+
+class RunAnnotationResponse(BaseModel):
+    """Phase 16.3 — current notes/tags for a run after a PATCH."""
+    run_id: str
+    notes: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class LibraryResponse(BaseModel):
@@ -469,6 +490,9 @@ class BacktestResponse(BaseModel):
     # Phase 16.2 — hash of the strategy code that produced this run.
     # Null for pre-16.2 runs.
     strategy_code_hash: str | None = None
+    # Phase 16.3 — user-supplied annotations on this run.
+    notes: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 # ---------- /deployments (Phase 11.6) ----------

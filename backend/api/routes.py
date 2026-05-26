@@ -30,6 +30,8 @@ from backend.api.schemas import (
     DeploymentRunHistoryEntry,
     DeploymentRunResponse,
     DeploymentTrackingResponse,
+    RunAnnotationRequest,
+    RunAnnotationResponse,
     StrategyUpdateRequest,
     StrategyVersionDetail,
     StrategyVersionEntry,
@@ -1217,6 +1219,8 @@ def library_route(
             dsr=s.dsr,
             oos_sharpe=s.oos_sharpe,
             strategy_code_hash=s.strategy_code_hash,
+            notes=s.notes,
+            tags=s.tags,
         )
         for s in scored
     ])
@@ -1498,6 +1502,40 @@ def t212_pies_route() -> list[dict[str, Any]]:
     )
 
 
+@router.patch("/runs/{run_id}", response_model=RunAnnotationResponse)
+def patch_run_annotations(
+    run_id: str, req: RunAnnotationRequest,
+) -> RunAnnotationResponse:
+    """Phase 16.3 — update a run's notes and/or tags. Omitted fields are
+    left unchanged; explicit null clears. Tag values are normalized
+    (lowercased, dedup'd, non-alnum stripped) before storage."""
+    with connect() as conn:
+        row = repo.get_run(conn, run_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="run not found")
+
+        # Pydantic v2: model_fields_set tells us which fields were
+        # actually present in the request body, so omission means
+        # "leave alone" and an explicit null means "clear".
+        provided = req.model_fields_set
+        new_notes = row.get("notes")
+        new_tags = row.get("tags")
+        if "notes" in provided:
+            new_notes = req.notes if req.notes else None
+        if "tags" in provided:
+            new_tags = repo.normalize_tags(req.tags)
+
+        repo.update_run_notes_tags(
+            conn, run_id=run_id, notes=new_notes, tags=new_tags,
+        )
+
+    return RunAnnotationResponse(
+        run_id=run_id,
+        notes=new_notes,
+        tags=[t for t in (new_tags or "").split(",") if t],
+    )
+
+
 @router.get("/runs/{run_id}", response_model=BacktestResponse)
 def get_run_route(run_id: str) -> BacktestResponse:
     """Load a stored run in the same shape as POST /backtest's response.
@@ -1571,6 +1609,8 @@ def get_run_route(run_id: str) -> BacktestResponse:
         deflated_sharpe=dsr_model,
         regimes=None,
         strategy_code_hash=run_row.get("strategy_code_hash"),
+        notes=run_row.get("notes"),
+        tags=[t for t in (run_row.get("tags") or "").split(",") if t],
     )
 
 

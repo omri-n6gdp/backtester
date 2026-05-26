@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS runs (
     -- Phase 16.2: links a run to the exact strategy_versions row that
     -- ran. Nullable for pre-16.2 runs; populated by every new backtest.
     strategy_code_hash TEXT,
+    -- Phase 16.3: user-supplied annotations. `notes` is free text; `tags`
+    -- is a normalized comma-separated list (lowercase, alphanumeric +
+    -- hyphen, no spaces). Both nullable.
+    notes              TEXT,
+    tags               TEXT,
     FOREIGN KEY (strategy_id) REFERENCES strategies(id)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_strategy ON runs(strategy_id);

@@ -164,3 +164,96 @@ def test_get_run_roundtrips_a_backtest(library_client):
 def test_get_run_unknown_id_returns_404(api_client):
     resp = api_client.get("/runs/nonexistent")
     assert resp.status_code == 404
+
+
+# ---- Phase 16.3 — notes + tags ----------------------------------------
+
+
+def _run_once(library_client, **overrides):
+    client, sid = library_client
+    payload = {
+        "strategy_id": sid, "ticker": "SPY", "timeframe": "1d",
+        "start": "2010-01-01", "end": "2012-01-01",
+        "params": {"short": 5, "long": 20},
+    }
+    payload.update(overrides)
+    return client.post("/backtest", json=payload).json()
+
+
+def test_patch_run_sets_notes_and_tags(library_client):
+    client, _ = library_client
+    body = _run_once(library_client)
+    run_id = body["run_id"]
+    # Initially empty.
+    assert body["notes"] is None
+    assert body["tags"] == []
+
+    upd = client.patch(
+        f"/runs/{run_id}",
+        json={"notes": "depends on covid rally", "tags": ["fragile", "needs-review"]},
+    )
+    assert upd.status_code == 200, upd.text
+    assert upd.json()["notes"] == "depends on covid rally"
+    assert upd.json()["tags"] == ["fragile", "needs-review"]
+
+    # Round-trips via GET /runs/{id}.
+    got = client.get(f"/runs/{run_id}").json()
+    assert got["notes"] == "depends on covid rally"
+    assert got["tags"] == ["fragile", "needs-review"]
+
+
+def test_patch_run_normalizes_tags(library_client):
+    client, _ = library_client
+    body = _run_once(library_client)
+    run_id = body["run_id"]
+    upd = client.patch(
+        f"/runs/{run_id}",
+        json={"tags": ["  Fragile  ", "fragile", "Needs Review!"]},
+    )
+    # Lowercased, dedup'd, non-alnum stripped (space → empty).
+    assert upd.json()["tags"] == ["fragile", "needsreview"]
+
+
+def test_patch_run_omitted_field_left_unchanged(library_client):
+    client, _ = library_client
+    body = _run_once(library_client)
+    run_id = body["run_id"]
+    client.patch(f"/runs/{run_id}", json={"notes": "first", "tags": ["x"]})
+    # Update only notes; tags stay.
+    upd = client.patch(f"/runs/{run_id}", json={"notes": "second"})
+    assert upd.json()["notes"] == "second"
+    assert upd.json()["tags"] == ["x"]
+    # Update only tags; notes stay.
+    upd2 = client.patch(f"/runs/{run_id}", json={"tags": ["y"]})
+    assert upd2.json()["notes"] == "second"
+    assert upd2.json()["tags"] == ["y"]
+
+
+def test_patch_run_explicit_null_clears(library_client):
+    client, _ = library_client
+    body = _run_once(library_client)
+    run_id = body["run_id"]
+    client.patch(f"/runs/{run_id}", json={"notes": "x", "tags": ["a"]})
+    cleared = client.patch(f"/runs/{run_id}", json={"notes": None, "tags": None})
+    assert cleared.json()["notes"] is None
+    assert cleared.json()["tags"] == []
+
+
+def test_library_returns_notes_and_tags(library_client):
+    client, _ = library_client
+    body = _run_once(library_client)
+    run_id = body["run_id"]
+    client.patch(
+        f"/runs/{run_id}",
+        json={"notes": "fragile", "tags": ["fragile"]},
+    )
+    rows = client.get("/library").json()["runs"]
+    target = next(r for r in rows if r["run_id"] == run_id)
+    assert target["notes"] == "fragile"
+    assert target["tags"] == ["fragile"]
+
+
+def test_patch_run_unknown_id_returns_404(library_client):
+    client, _ = library_client
+    resp = client.patch("/runs/nonexistent", json={"notes": "x"})
+    assert resp.status_code == 404

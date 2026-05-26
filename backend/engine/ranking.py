@@ -32,7 +32,7 @@ is client-side.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -85,6 +85,9 @@ class ScoredRun:
     oos_sharpe: float | None = None
     # Phase 16.2 — code version this run was computed against.
     strategy_code_hash: str | None = None
+    # Phase 16.3 — user-supplied annotations.
+    notes: str | None = None
+    tags: list[str] = field(default_factory=list)
     # Per-strategy flag (Phase 15.4) — favourites pin to the top of the library.
     favourite: bool = False
 
@@ -238,6 +241,8 @@ def compute_run_scores(
             dsr=dsr,
             oos_sharpe=oos_sharpe,
             strategy_code_hash=r.get("strategy_code_hash"),
+            notes=r.get("notes"),
+            tags=[t for t in (r.get("tags") or "").split(",") if t],
             favourite=bool(r.get("favourite", False)),
         ))
     return out
