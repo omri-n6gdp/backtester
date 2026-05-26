@@ -103,6 +103,22 @@ CREATE INDEX IF NOT EXISTS idx_orders_deployment ON orders_sent(deployment_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status     ON orders_sent(status);
 CREATE INDEX IF NOT EXISTS idx_orders_t212id     ON orders_sent(t212_order_id);
 
+-- Phase 14: per-run history — one row per `run_deployment` fire,
+-- recording the outcome so the Tracking UI can show a real audit trail
+-- (more than just `last_run_at`). Deleting a deployment cascades.
+CREATE TABLE IF NOT EXISTS deployment_runs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    deployment_id     TEXT NOT NULL,
+    ran_at            TEXT NOT NULL,              -- wall-clock ISO 8601 UTC
+    status            TEXT NOT NULL,              -- OK / NO_DATA / ERROR / INSUFFICIENT_CASH / CIRCUIT_BREAKER / DISARMED / NOT_FOUND
+    as_of_timestamp   TEXT,                       -- bar timestamp the run acted on
+    intent_count      INTEGER NOT NULL DEFAULT 0,
+    submitted_count   INTEGER NOT NULL DEFAULT 0,
+    error             TEXT,
+    FOREIGN KEY (deployment_id) REFERENCES deployments(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_deployment_runs_dep ON deployment_runs(deployment_id, ran_at DESC);
+
 -- `fills_received` is one row per partial / full fill. T212 typically
 -- emits one row per order but the schema allows N to keep the option
 -- open without a migration.

@@ -350,6 +350,68 @@ def test_run_deployment_cash_precheck_failure_does_not_block(fresh_db, monkeypat
     assert placed == [("AAPL_US_EQ", 12.5)]
 
 
+# --- per-run history (Phase 14) ------------------------------------------
+
+
+def test_run_deployment_appends_one_history_row_per_fire(fresh_db, monkeypatch):
+    """Every reachable run_deployment outcome writes one deployment_runs
+    row, so Tracking gets the full audit trail."""
+    dep_id = _seed_deployment(fresh_db, armed=True)
+
+    df = make_synthetic_ohlcv(n=300).copy()
+    df.loc[df.index[-1], "close"] = 200.0
+    monkeypatch.setattr(scheduler, "get_prices", _recording_prices(df))
+    monkeypatch.setattr(scheduler, "resolve_price_ticker", lambda t: "AAPL")
+    monkeypatch.setattr(scheduler, "account_fx_factor", lambda t: 1.0)
+    monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+    monkeypatch.setattr(t212_client, "get_account_cash", lambda: {"free": 1_000_000.0})
+    monkeypatch.setattr(t212_client, "get_order", lambda oid: {"status": "NEW"})
+    monkeypatch.setattr(t212_client, "place_market_order",
+                        lambda t, q: _T212_RESPONSE)
+
+    scheduler.run_deployment(dep_id)  # OK, intent_count=1, submitted=1
+    scheduler.run_deployment(dep_id)  # OK, idempotent, intent_count=1, submitted=0
+
+    with connect() as conn:
+        history = repo.list_deployment_runs(conn, dep_id)
+    assert len(history) == 2
+    # Most recent first.
+    assert history[0]["status"] == "OK"
+    assert history[1]["status"] == "OK"
+    assert history[0]["intent_count"] == 1
+    assert history[0]["submitted_count"] == 0  # 2nd fire was idempotent
+    assert history[1]["submitted_count"] == 1
+    assert all(h["error"] is None for h in history)
+    assert all(h["as_of_timestamp"] is not None for h in history)
+
+
+def test_history_captures_error_status(fresh_db, monkeypatch):
+    """A failed run records status=ERROR with the error message."""
+    dep_id = _seed_deployment(fresh_db, armed=True)
+    monkeypatch.setattr(scheduler, "resolve_price_ticker", lambda t: "AAPL")
+
+    def boom(*a, **k):
+        raise RuntimeError("price fetch exploded")
+    monkeypatch.setattr(scheduler, "get_prices", boom)
+
+    scheduler.run_deployment(dep_id)
+
+    with connect() as conn:
+        history = repo.list_deployment_runs(conn, dep_id)
+    assert len(history) == 1
+    assert history[0]["status"] == "ERROR"
+    assert "exploded" in (history[0]["error"] or "")
+
+
+def test_disarmed_run_writes_no_history(fresh_db):
+    """A disarmed deployment returns before reaching the finally block —
+    no history row. The user paused it; we don't spam history."""
+    dep_id = _seed_deployment(fresh_db, armed=False)
+    scheduler.run_deployment(dep_id)
+    with connect() as conn:
+        assert repo.list_deployment_runs(conn, dep_id) == []
+
+
 # --- resolve_price_ticker -------------------------------------------------
 
 

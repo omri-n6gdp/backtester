@@ -25,6 +25,7 @@ from backend.api.schemas import (
     DeploymentCreateRequest,
     DeploymentListResponse,
     DeploymentModel,
+    DeploymentRunHistoryEntry,
     DeploymentRunResponse,
     DeploymentTrackingResponse,
     EventDrivenBacktestRequest,
@@ -1644,6 +1645,7 @@ def deployment_tracking_route(deployment_id: str) -> DeploymentTrackingResponse:
         if row is None:
             raise HTTPException(status_code=404, detail="deployment not found")
         order_rows = repo.list_orders_for_deployment(conn, deployment_id)
+        run_rows = repo.list_deployment_runs(conn, deployment_id, limit=50)
         strat = repo.get_strategy(conn, row["strategy_id"])
 
     expected_timestamps: list[str] = []
@@ -1718,6 +1720,7 @@ def deployment_tracking_route(deployment_id: str) -> DeploymentTrackingResponse:
     return DeploymentTrackingResponse(
         deployment=_deployment_to_model(row),
         orders=[_order_to_model(r) for r in order_rows],
+        runs=[DeploymentRunHistoryEntry(**r) for r in run_rows],
         expected_timestamps=expected_timestamps,
         expected_equity=expected_equity,
         expected_buy_hold=expected_buy_hold,

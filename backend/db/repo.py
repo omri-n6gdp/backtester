@@ -295,9 +295,53 @@ def update_deployment_last_run(
 
 def delete_deployment(conn: sqlite3.Connection, deployment_id: str) -> bool:
     """Delete a deployment. ON DELETE CASCADE removes its `orders_sent`
-    rows (and, in turn, their fills). Returns True if the row existed."""
+    rows (and, in turn, their fills) and `deployment_runs` history.
+    Returns True if the row existed."""
     cur = conn.execute("DELETE FROM deployments WHERE id = ?", (deployment_id,))
     return cur.rowcount > 0
+
+
+def insert_deployment_run(
+    conn: sqlite3.Connection,
+    *,
+    deployment_id: str,
+    ran_at: str,
+    status: str,
+    as_of_timestamp: str | None,
+    intent_count: int,
+    submitted_count: int,
+    error: str | None,
+) -> None:
+    """Phase 14 — append one row to deployment_runs after every fire of
+    run_deployment so the Tracking UI can show a real audit trail."""
+    conn.execute(
+        """
+        INSERT INTO deployment_runs (
+            deployment_id, ran_at, status, as_of_timestamp,
+            intent_count, submitted_count, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (deployment_id, ran_at, status, as_of_timestamp,
+         intent_count, submitted_count, error),
+    )
+
+
+def list_deployment_runs(
+    conn: sqlite3.Connection, deployment_id: str, *, limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Most-recent-first history of a deployment's fires (Phase 14)."""
+    rows = conn.execute(
+        """
+        SELECT id, deployment_id, ran_at, status, as_of_timestamp,
+               intent_count, submitted_count, error
+        FROM deployment_runs
+        WHERE deployment_id = ?
+        ORDER BY ran_at DESC, id DESC
+        LIMIT ?
+        """,
+        (deployment_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def insert_order(

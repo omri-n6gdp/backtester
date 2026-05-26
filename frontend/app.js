@@ -2395,6 +2395,56 @@ function DeploymentTrackingPanel({ deploymentId, strategies, onBack }) {
             </div>
           `}
         </div>
+
+        <!-- Phase 14 — per-run history. The audit trail of every fire,
+             not just the last one. Read-only; rendered below the orders
+             so the user sees what was placed first, then the broader
+             context of how often the deployment has been running and how
+             it's behaved. -->
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">
+            Recent runs <span class="num">· ${data.runs?.length ?? 0}</span>
+            <span class="normal-case text-mute-400">— every fire of the scheduler, most recent first</span>
+          </div>
+          ${!data.runs || data.runs.length === 0
+            ? html`<div class="bg-ink-900 border border-ink-700 rounded px-4 py-8 text-center text-mute-400 text-sm">
+                No runs yet. History appears here once the deployment fires (cron or "Run now").
+              </div>`
+            : html`
+              <div class="bg-ink-900 border border-ink-700 rounded overflow-x-auto">
+                <table class="min-w-full text-sm">
+                  <thead>
+                    <tr class="border-b border-ink-700 text-mute-400 text-xs">
+                      <th class="py-2 px-3 text-left font-medium">Ran at (UTC)</th>
+                      <th class="py-2 px-3 text-left font-medium">Status</th>
+                      <th class="py-2 px-3 text-left font-medium">As-of bar</th>
+                      <th class="py-2 px-3 text-right font-medium">Intents</th>
+                      <th class="py-2 px-3 text-right font-medium">Submitted</th>
+                      <th class="py-2 px-3 text-left font-medium">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${data.runs.map(r => {
+                      const statusTone =
+                        r.status === 'OK' ? 'text-accent-400' :
+                        r.status === 'ERROR' || r.status === 'CIRCUIT_BREAKER' ? 'text-danger-500' :
+                        r.status === 'INSUFFICIENT_CASH' ? 'text-yellow-400' :
+                        'text-mute-300';
+                      return html`
+                        <tr key=${r.id} class="border-t border-ink-800">
+                          <td class="py-2 px-3 num text-mute-200 text-xs">${r.ran_at.slice(0, 19).replace('T', ' ')}</td>
+                          <td class="py-2 px-3 num ${statusTone}">${r.status}</td>
+                          <td class="py-2 px-3 num text-mute-400 text-xs">${r.as_of_timestamp?.slice(0, 10) ?? '—'}</td>
+                          <td class="py-2 px-3 text-right num text-mute-200">${r.intent_count}</td>
+                          <td class="py-2 px-3 text-right num text-mute-100">${r.submitted_count}</td>
+                          <td class="py-2 px-3 text-xs text-danger-500 truncate max-w-xs">${r.error ?? ''}</td>
+                        </tr>`;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            `}
+        </div>
       `}
     </div>
   `;

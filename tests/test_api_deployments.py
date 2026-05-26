@@ -282,6 +282,31 @@ def test_tracking_falls_back_to_full_window_for_new_deployment(api_client, monke
     assert len(body["expected_equity"]) == 300
 
 
+def test_tracking_returns_run_history(api_client, monkeypatch):
+    """Phase 14 — /tracking carries the per-run history table."""
+    sid = post_strategy(api_client, "S", _STRATEGY)
+    dep = _create_deployment(api_client, sid).json()
+
+    df = make_synthetic_ohlcv(n=300).copy()
+    df.loc[df.index[-1], "close"] = 200.0
+    monkeypatch.setattr("backend.deploy.scheduler.get_prices", lambda *a, **k: df)
+    monkeypatch.setattr("backend.api.routes.get_prices", lambda *a, **k: df)
+    monkeypatch.setattr("backend.deploy.scheduler.resolve_price_ticker", lambda t: "AAPL")
+    monkeypatch.setattr("backend.deploy.scheduler.account_fx_factor", lambda t: 1.0)
+    monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+    monkeypatch.setattr(t212_client, "get_account_cash", lambda: {"free": 1_000_000.0})
+    monkeypatch.setattr(t212_client, "place_market_order", lambda tk, q: {"id": 7})
+
+    api_client.post(f"/deployments/{dep['id']}/run")
+
+    body = api_client.get(f"/deployments/{dep['id']}/tracking").json()
+    assert "runs" in body
+    assert len(body["runs"]) == 1
+    assert body["runs"][0]["status"] == "OK"
+    assert body["runs"][0]["intent_count"] == 1
+    assert body["runs"][0]["submitted_count"] == 1
+
+
 def test_tracking_unknown_deployment_404(api_client):
     assert api_client.get("/deployments/nope/tracking").status_code == 404
 

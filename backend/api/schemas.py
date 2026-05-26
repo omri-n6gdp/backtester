@@ -512,6 +512,19 @@ class DeploymentRunResponse(BaseModel):
     error: str | None = None
 
 
+class DeploymentRunHistoryEntry(BaseModel):
+    """One row from deployment_runs — the audit trail of a deployment's
+    fires (Phase 14)."""
+    id: int
+    deployment_id: str
+    ran_at: str
+    status: str                                  # OK / NO_DATA / ERROR / INSUFFICIENT_CASH / CIRCUIT_BREAKER / DISARMED
+    as_of_timestamp: str | None = None
+    intent_count: int = 0
+    submitted_count: int = 0
+    error: str | None = None
+
+
 class DeploymentTrackingResponse(BaseModel):
     """Expected (backtest) vs actual (orders sent) for a deployment.
 
@@ -523,6 +536,8 @@ class DeploymentTrackingResponse(BaseModel):
     """
     deployment: DeploymentModel
     orders: list[OrderSentModel]
+    # Phase 14 — per-fire history, most recent first (latest 50).
+    runs: list[DeploymentRunHistoryEntry] = Field(default_factory=list)
     expected_timestamps: list[str]
     expected_equity: list[float | None]
     # Buy-and-hold baseline over the same window, aligned to expected_timestamps.

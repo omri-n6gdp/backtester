@@ -414,12 +414,24 @@ def run_deployment(deployment_id: str) -> DeploymentRunResult:
         # NO_DATA and ERROR alike, so the Tracking UI can tell the job is
         # alive even when it is erroring. (Not reached for DISARMED /
         # NOT_FOUND — those return above, before this try.)
+        # Phase 14 — also append one row to deployment_runs per fire so
+        # Tracking can show the full audit trail.
         try:
             with connect() as conn:
                 repo.update_deployment_last_run(conn, deployment_id, ran_at)
+                repo.insert_deployment_run(
+                    conn,
+                    deployment_id=deployment_id,
+                    ran_at=ran_at,
+                    status=status,
+                    as_of_timestamp=as_of,
+                    intent_count=len(intents),
+                    submitted_count=sum(1 for r in submit_results if r.status == "SUBMITTED"),
+                    error=error,
+                )
         except Exception:  # noqa: BLE001
             logger.exception(
-                "run_deployment %s: could not update last_run_at", deployment_id,
+                "run_deployment %s: could not record run history", deployment_id,
             )
 
     return DeploymentRunResult(
