@@ -203,3 +203,59 @@ def test_get_strategy_detail_includes_current_hash(api_client):
     sid = body["strategy_id"]
     detail = api_client.get(f"/strategies/{sid}").json()
     assert detail["code_hash"] == body["code_hash"]
+
+
+# ---- Phase 16.4 — strategy fork ----------------------------------------
+
+
+def test_fork_creates_independent_copy(api_client):
+    src = _create_strategy(api_client, name="SMA")
+    sid = src["strategy_id"]
+
+    resp = api_client.post(f"/strategies/{sid}/fork")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    new_id = body["strategy_id"]
+    assert new_id != sid
+
+    # Both strategies appear in the list; the copy carries the suffix.
+    listed = {s["id"]: s for s in api_client.get("/strategies").json()}
+    assert new_id in listed
+    assert listed[new_id]["name"] == "SMA (copy)"
+
+    # Code matches the source. Hash also matches because the copy's
+    # initial version is keyed on (strategy_id, code_hash) — independent
+    # strategy_id rows share a code body but live in separate buckets.
+    detail = api_client.get(f"/strategies/{new_id}").json()
+    src_detail = api_client.get(f"/strategies/{sid}").json()
+    assert detail["code"] == src_detail["code"]
+    assert detail["code_hash"] == src_detail["code_hash"]
+
+    # The copy has exactly one version row.
+    versions = api_client.get(f"/strategies/{new_id}/versions").json()
+    assert len(versions["versions"]) == 1
+
+
+def test_fork_does_not_copy_favourite(api_client):
+    src = _create_strategy(api_client)
+    sid = src["strategy_id"]
+    api_client.post(f"/strategies/{sid}/favourite", json={"favourite": True})
+
+    fork = api_client.post(f"/strategies/{sid}/fork").json()
+    new_id = fork["strategy_id"]
+    listed = {s["id"]: s for s in api_client.get("/strategies").json()}
+    assert listed[new_id]["favourite"] is False
+    assert listed[sid]["favourite"] is True
+
+
+def test_fork_unknown_strategy_404(api_client):
+    resp = api_client.post("/strategies/nope/fork")
+    assert resp.status_code == 404
+
+
+def test_fork_deleted_strategy_404(api_client):
+    src = _create_strategy(api_client)
+    sid = src["strategy_id"]
+    api_client.delete(f"/strategies/{sid}")
+    resp = api_client.post(f"/strategies/{sid}/fork")
+    assert resp.status_code == 404

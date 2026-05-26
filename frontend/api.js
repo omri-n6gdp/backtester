@@ -100,6 +100,16 @@ export async function createStrategy(name, description, code) {
   return jsonOrThrow(res);
 }
 
+export async function forkStrategy(strategyId) {
+  // Phase 16.4 — duplicate a strategy. The copy gets a new id, a
+  // "<original> (copy)" name, the same code body and description, and
+  // its own initial strategy_versions row.
+  const res = await fetch(`${API_BASE}/strategies/${encodeURIComponent(strategyId)}/fork`, {
+    method: 'POST',
+  });
+  return jsonOrThrow(res);
+}
+
 export async function updateStrategy(strategyId, name, description, code) {
   // Phase 16.2 — replace a strategy's name/description/code. A new
   // strategy_versions row is created server-side when the code hash is new.

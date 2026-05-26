@@ -552,6 +552,52 @@ def get_strategy_version_route(
     )
 
 
+@router.post("/strategies/{strategy_id}/fork", response_model=StrategyCreateResponse)
+def fork_strategy_route(strategy_id: str) -> StrategyCreateResponse:
+    """Phase 16.4 — duplicate an existing strategy. The copy gets a
+    fresh id, a "<original> (copy)" name, and its own initial version
+    row. Same code, same description; runs / favourites are NOT copied.
+    """
+    with connect() as conn:
+        src = repo.get_strategy(conn, strategy_id)
+    if src is None or src["active"] == 0:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    src_path = Path(src["code_path"])
+    if not src_path.exists():
+        raise HTTPException(status_code=410, detail="strategy code file missing on disk")
+    code = src_path.read_text(encoding="utf-8")
+
+    new_id = uuid.uuid4().hex
+    new_path = STRATEGIES_DIR / f"{new_id}.py"
+    STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
+    new_path.write_text(code, encoding="utf-8")
+
+    new_name = f"{src['name']} (copy)"
+    created_at = datetime.now(timezone.utc).isoformat()
+    with connect() as conn:
+        repo.insert_strategy(
+            conn,
+            strategy_id=new_id,
+            name=new_name,
+            description=src["description"] or "",
+            code_path=str(new_path),
+            created_at=created_at,
+        )
+        code_hash, _ = repo.insert_strategy_version(
+            conn, strategy_id=new_id, code=code, created_at=created_at,
+        )
+
+    # No code to validate (it came from a valid stored strategy) — return
+    # an ok ValidationResult so the response shape matches /strategies POST.
+    return StrategyCreateResponse(
+        strategy_id=new_id,
+        validation_result=ValidationResultModel(
+            ok=True, errors=[], warnings=[], strategy_name="strategy",
+        ),
+        code_hash=code_hash,
+    )
+
+
 @router.post("/strategies/{strategy_id}/favourite", response_model=StrategySummary)
 def set_strategy_favourite(strategy_id: str, req: FavouriteRequest) -> StrategySummary:
     """Star or un-star a strategy. Favourites pin to the top of the

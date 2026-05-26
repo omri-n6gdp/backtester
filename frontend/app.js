@@ -15,7 +15,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import {
   getHealth, listStrategies, runBacktest, runSweep, runEventDriven,
   validateStrategy, translateStrategy, createStrategy, updateStrategy,
-  getStrategy, setStrategyFavourite,
+  forkStrategy, getStrategy, setStrategyFavourite,
   getLibrary, getRun, patchRunAnnotations,
   getT212Account, getT212Positions, getT212Orders, getT212Pies,
   listDeployments, createDeployment, armDeployment, disarmDeployment,
@@ -322,7 +322,7 @@ function FullMetricsTable({ result }) {
 }
 
 function Sidebar({ strategies, selectedId, onSelect, loading, error, onRefresh,
-                   onNewStrategy, onToggleFavourite, onEditStrategy }) {
+                   onNewStrategy, onToggleFavourite, onEditStrategy, onForkStrategy }) {
   return html`
     <aside class="w-72 shrink-0 border-r border-ink-700 bg-ink-900 flex flex-col">
       <div class="px-4 py-3 border-b border-ink-700 flex items-center justify-between">
@@ -360,6 +360,9 @@ function Sidebar({ strategies, selectedId, onSelect, loading, error, onRefresh,
                 <button onClick=${(e) => { e.stopPropagation(); onEditStrategy(s); }}
                   class="shrink-0 px-2 text-sm leading-none text-mute-500 hover:text-accent-400 transition"
                   title="Edit strategy">✎</button>
+                <button onClick=${(e) => { e.stopPropagation(); onForkStrategy(s); }}
+                  class="shrink-0 px-2 text-sm leading-none text-mute-500 hover:text-accent-400 transition"
+                  title="Duplicate strategy">⎘</button>
                 <button onClick=${() => onToggleFavourite(s)}
                   class="shrink-0 px-3 text-lg leading-none transition
                          ${s.favourite ? 'text-yellow-400' : 'text-mute-600 hover:text-mute-300'}"
@@ -3694,6 +3697,17 @@ function App() {
           loading=${stratLoading} error=${stratError} onRefresh=${refreshStrategies}
           onNewStrategy=${() => { setEditingStrategyId(null); setView('author'); }}
           onEditStrategy=${(s) => { setEditingStrategyId(s.id); setView('author'); }}
+          onForkStrategy=${async (s) => {
+            try {
+              const out = await forkStrategy(s.id);
+              const list = await listStrategies();
+              setStrategies(list);
+              setSelectedId(out.strategy_id);
+              pushToast('success', `Forked "${s.name}" → "${s.name} (copy)".`);
+            } catch (err) {
+              pushToast('error', `Fork failed: ${err.message}`);
+            }
+          }}
           onToggleFavourite=${onToggleFavourite} />
 
         <main class="flex-1 min-w-0 overflow-y-auto bg-ink-950">
