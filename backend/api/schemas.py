@@ -422,6 +422,56 @@ class MultiAssetResultModel(BaseModel):
     error: str | None = None
 
 
+# Phase 17.1 — primary multi-ticker backtest mode.
+class MultiTickerRequest(BaseModel):
+    """Run a strategy across N tickers in one call. Per-ticker errors are
+    captured so a single bad symbol doesn't fail the whole batch."""
+    strategy_id: str
+    tickers: list[str] = Field(min_length=1)
+    timeframe: str = "1d"
+    start: str
+    end: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    cost_config: CostConfigModel | None = None
+    starting_capital: float = 100_000.0
+    bars_per_year: int = 252
+
+
+class MultiTickerResultModel(BaseModel):
+    """One ticker's worth of backtest output — same shape as the
+    summary/metrics on /backtest's response, plus the equity curve
+    aligned to its own timestamps. `error` is set when the ticker
+    could not be backtested."""
+    ticker: str
+    summary: dict[str, Any] = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    timestamps: list[str] = Field(default_factory=list)
+    equity: list[float | None] = Field(default_factory=list)
+    error: str | None = None
+
+
+class MultiTickerAggregateModel(BaseModel):
+    """Cross-ticker summary stats. `win_rate_across_tickers` is the
+    fraction of *successful* tickers whose CAGR > 0."""
+    n_succeeded: int
+    n_failed: int
+    mean_sharpe: float | None = None
+    median_sharpe: float | None = None
+    mean_cagr: float | None = None
+    median_cagr: float | None = None
+    win_rate_across_tickers: float | None = None
+    best_ticker: str | None = None          # highest CAGR
+    worst_ticker: str | None = None         # lowest CAGR
+
+
+class MultiTickerResponse(BaseModel):
+    """Response from POST /backtest/multi_ticker."""
+    strategy_id: str
+    strategy_code_hash: str | None = None
+    results: list[MultiTickerResultModel]
+    aggregate: MultiTickerAggregateModel
+
+
 class SweepRequest(BaseModel):
     """Request body for POST /backtest/sweep."""
     strategy_id: str

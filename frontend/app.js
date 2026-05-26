@@ -14,6 +14,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 
 import {
   getHealth, listStrategies, runBacktest, runSweep, runEventDriven,
+  runMultiTicker,
   validateStrategy, translateStrategy, createStrategy, updateStrategy,
   forkStrategy, getStrategy, setStrategyFavourite,
   getLibrary, getRun, patchRunAnnotations,
@@ -672,12 +673,14 @@ function ComboTable({ combos, bestIndex, selectionMetric, higherIsBetter }) {
 function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
                      costConfig, setCostConfig,
                      eventDriven, setEventDriven,
+                     multiTicker, setMultiTicker,
                      onRun, running }) {
   const disabled = !selectedId || running;
   const upd = (k, v) => setConfig(c => ({ ...c, [k]: v }));
   const updR = (k, v) => setRobustness(r => ({ ...r, [k]: v }));
   const updC = (k, v) => setCostConfig(c => ({ ...c, [k]: v }));
   const updED = (k, v) => setEventDriven(s => ({ ...s, [k]: v }));
+  const updMT = (k, v) => setMultiTicker(s => ({ ...s, [k]: v }));
   const resetCosts = () => setCostConfig(DEFAULT_COST_CONFIG);
 
   const ic = inputCls();
@@ -686,11 +689,29 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
     <aside class="w-80 shrink-0 border-l border-ink-700 bg-ink-900 flex flex-col">
       <div class="p-4 space-y-4 flex-1 overflow-y-auto text-sm">
 
+        <!-- Phase 17.1 — multi-ticker toggle. When on, the ticker
+             field becomes a comma-separated list and Run kicks off
+             a per-ticker batch instead of a single backtest. -->
+        <div class="flex items-center gap-2 pb-2 border-b border-ink-800">
+          <input type="checkbox" id="multi-ticker-cb" class="accent-accent-500"
+            checked=${multiTicker.enabled} onChange=${e => updMT('enabled', e.target.checked)} />
+          <label for="multi-ticker-cb" class="text-xs text-mute-200 flex-1 font-medium">Multi-ticker mode</label>
+        </div>
+
         <!-- Shared: ticker / timeframe / dates / capital -->
-        <${Field} label="Ticker">
-          <input class=${ic} value=${config.ticker}
-            onChange=${e => upd('ticker', e.target.value.toUpperCase())} />
-        </${Field}>
+        ${multiTicker.enabled
+          ? html`
+            <${Field} label="Tickers (comma-separated)">
+              <input class=${ic} value=${multiTicker.tickers}
+                placeholder="SPY, QQQ, GLD, AAPL"
+                onChange=${e => updMT('tickers', e.target.value)} />
+            </${Field}>`
+          : html`
+            <${Field} label="Ticker">
+              <input class=${ic} value=${config.ticker}
+                onChange=${e => upd('ticker', e.target.value.toUpperCase())} />
+            </${Field}>`
+        }
         <${Field} label="Timeframe">
           <select class=${ic} value=${config.timeframe} onChange=${e => upd('timeframe', e.target.value)}>
             <option value="1d">1d</option>
@@ -1541,6 +1562,96 @@ function AuthorView({ onCancel, onSaved, editingStrategyId = null }) {
     </div>
   `;
 }
+
+// ---- MultiTickerResult (Phase 17.1) --------------------------------
+//
+// Renders a per-ticker overlay equity chart plus a sortable table with
+// CAGR / Sharpe / max DD / trades per ticker, and the cross-ticker
+// aggregate at the top.
+
+function MultiTickerResult({ result, startingCapital }) {
+  if (!result) return null;
+  const ok = result.results.filter(r => !r.error);
+  const failed = result.results.filter(r => r.error);
+
+  // Adapter for MultiEquityChart: pass each ticker as a "run" with a
+  // label so the chart shows the ticker symbol in tooltips.
+  const overlayRuns = ok.map(r => ({
+    pinId: r.ticker,
+    label: r.ticker,
+    timestamps: r.timestamps,
+    equity: r.equity,
+  }));
+
+  const agg = result.aggregate || {};
+
+  return html`
+    <div class="space-y-4">
+      <div>
+        <div class="text-xs uppercase tracking-wider text-mute-400">Multi-ticker backtest</div>
+        <div class="text-lg text-mute-100 font-medium mt-0.5">
+          ${ok.length} ticker${ok.length === 1 ? '' : 's'} succeeded${failed.length > 0 ? ` · ${failed.length} failed` : ''}
+        </div>
+      </div>
+
+      <!-- Aggregate stat cards -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <${MetricCard} label="Mean CAGR" value=${fmtPct(agg.mean_cagr)} />
+        <${MetricCard} label="Median Sharpe" value=${fmtNum(agg.median_sharpe, 2)} />
+        <${MetricCard} label="Win rate (CAGR>0)" value=${fmtPct(agg.win_rate_across_tickers)} />
+        <${MetricCard} label="Best / Worst" value=${(agg.best_ticker || '—') + ' / ' + (agg.worst_ticker || '—')} />
+      </div>
+
+      ${overlayRuns.length > 0 && html`
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400 mb-2">Equity curves (overlay)</div>
+          <div class="h-[340px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
+            <${MultiEquityChart} runs=${overlayRuns} />
+          </div>
+        </div>
+      `}
+
+      <!-- Per-ticker table -->
+      <div class="bg-ink-900 border border-ink-700 rounded overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-ink-700 text-mute-400 text-xs">
+              <th class="py-2 px-3 text-left font-medium">Ticker</th>
+              <th class="py-2 px-3 text-right font-medium">CAGR</th>
+              <th class="py-2 px-3 text-right font-medium">Sharpe</th>
+              <th class="py-2 px-3 text-right font-medium">Max DD</th>
+              <th class="py-2 px-3 text-right font-medium">Calmar</th>
+              <th class="py-2 px-3 text-right font-medium">Trades</th>
+              <th class="py-2 px-3 text-right font-medium">Final equity</th>
+              <th class="py-2 px-3 text-left font-medium">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${result.results.map(r => html`
+              <tr key=${r.ticker} class="border-t border-ink-800">
+                <td class="py-2 px-3 num text-mute-100">${r.ticker}</td>
+                ${r.error
+                  ? html`
+                    <td colspan="6" class="py-2 px-3 text-mute-500 text-xs italic">—</td>
+                    <td class="py-2 px-3 text-xs text-danger-500 truncate max-w-xs">${r.error}</td>`
+                  : html`
+                    <td class="py-2 px-3 text-right num ${(r.metrics?.cagr ?? 0) > 0 ? 'text-accent-400' : 'text-danger-500'}">${fmtPct(r.metrics?.cagr)}</td>
+                    <td class="py-2 px-3 text-right num text-mute-100">${fmtNum(r.metrics?.sharpe, 2)}</td>
+                    <td class="py-2 px-3 text-right num text-danger-500">${fmtPct(r.metrics?.max_drawdown)}</td>
+                    <td class="py-2 px-3 text-right num text-mute-200">${fmtNum(r.metrics?.calmar, 2)}</td>
+                    <td class="py-2 px-3 text-right num text-mute-200">${r.summary?.n_trades ?? '—'}</td>
+                    <td class="py-2 px-3 text-right num text-mute-100">${r.summary?.final_equity != null ? '$' + Math.round(r.summary.final_equity).toLocaleString() : '—'}</td>
+                    <td class="py-2 px-3 text-xs text-accent-400">ok</td>`
+                }
+              </tr>
+            `)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 
 // ---- RunAnnotationsEditor (Phase 16.3) -----------------------------
 //
@@ -3301,6 +3412,15 @@ function App() {
     trailing_stop_pct: '',
   });
 
+  // Phase 17.1 — multi-ticker mode. When enabled, the right rail
+  // accepts a comma-separated tickers list and `onRun` dispatches to
+  // /backtest/multi_ticker, populating `multiTickerResult`.
+  const [multiTicker, setMultiTicker] = useState({
+    enabled: false,
+    tickers: 'SPY, QQQ, GLD',
+  });
+  const [multiTickerResult, setMultiTickerResult] = useState(null);
+
   const [running, setRunning] = useState(false);
   // Synchronous double-submit guard. `disabled=${running}` only blocks the
   // button after React re-renders, leaving a window where a fast double-click
@@ -3453,12 +3573,35 @@ function App() {
     setRunning(true);
     setRunError(null);
     setResult(null);
+    setMultiTickerResult(null);
     // A fresh backtest invalidates any optimisation built from the old run.
     setSweepResult(null);
     setShowOptimise(false);
     try {
       let params = {};
       try { params = JSON.parse(config.paramsJson || '{}'); } catch { /* use empty */ }
+
+      // Phase 17.1 — multi-ticker mode dispatches to /backtest/multi_ticker.
+      if (multiTicker.enabled) {
+        const tickers = (multiTicker.tickers || '')
+          .split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+        if (tickers.length === 0) {
+          setRunError('Enter at least one ticker (comma-separated).');
+          pushToast('error', 'Enter at least one ticker.');
+          return;
+        }
+        const payload = {
+          strategy_id: selectedId,
+          tickers,
+          timeframe: config.timeframe,
+          start: config.start, end: config.end,
+          params,
+          starting_capital: config.starting_capital,
+          cost_config: costConfig,
+        };
+        setMultiTickerResult(await runMultiTicker(payload));
+        return;
+      }
 
       // Event-driven mode: hits a separate route. Robustness analyses
       // (OOS / MC / DSR / regimes) aren't wired into it.
@@ -3650,7 +3793,14 @@ function App() {
     </div>
   `;
 
-  const showCanvas = !!result;
+  const multiTickerCanvas = multiTickerResult && html`
+    <div class="p-6">
+      <${MultiTickerResult} result=${multiTickerResult}
+                            startingCapital=${config.starting_capital} />
+    </div>
+  `;
+
+  const showCanvas = !!result || !!multiTickerResult;
 
   return html`
     <${AcknowledgeRunsContext.Provider} value=${acknowledgeRuns}>
@@ -3754,7 +3904,9 @@ function App() {
                       </div>
                     </div>
                   `}
-                  ${showCanvas ? backtestCanvas : emptyCanvas}
+                  ${multiTickerResult ? multiTickerCanvas
+                    : result ? backtestCanvas
+                    : emptyCanvas}
                 `}
         </main>
 
@@ -3763,6 +3915,7 @@ function App() {
           robustness=${robustness} setRobustness=${setRobustness}
           costConfig=${costConfig} setCostConfig=${setCostConfig}
           eventDriven=${eventDriven} setEventDriven=${setEventDriven}
+          multiTicker=${multiTicker} setMultiTicker=${setMultiTicker}
           onRun=${onRun} running=${running} />`}
       </div>
     </div>

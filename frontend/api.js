@@ -64,6 +64,16 @@ export async function runSweep(payload) {
   return jsonOrThrow(res);
 }
 
+export async function runMultiTicker(payload) {
+  // Phase 17.1 — run a strategy across N tickers in one call.
+  const res = await fetch(`${API_BASE}/backtest/multi_ticker`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow(res);
+}
+
 export async function runEventDriven(payload) {
   const res = await fetch(`${API_BASE}/backtest/event_driven`, {
     method: 'POST',

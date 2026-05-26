@@ -48,6 +48,10 @@ from backend.api.schemas import (
     MonteCarloConfigModel,
     MonteCarloResponseModel,
     MultiAssetResultModel,
+    MultiTickerAggregateModel,
+    MultiTickerRequest,
+    MultiTickerResponse,
+    MultiTickerResultModel,
     OOSResponseModel,
     OrderSentModel,
     ParamStabilityEntry,
@@ -1270,6 +1274,151 @@ def library_route(
         )
         for s in scored
     ])
+
+
+# -------- /backtest/multi_ticker (Phase 17.1) --------
+
+@router.post("/backtest/multi_ticker", response_model=MultiTickerResponse)
+def run_multi_ticker_route(req: MultiTickerRequest) -> MultiTickerResponse:
+    """Phase 17.1 — run one strategy across N tickers, returning a
+    per-ticker equity curve + metrics plus a cross-ticker aggregate.
+
+    Per-ticker errors are isolated: a single bad symbol leaves the rest
+    of the batch intact (it shows up with `error` populated and empty
+    metrics). No DB persistence here — the library is for "this
+    specific run with this specific ticker"; the multi-ticker view is
+    transient comparison material.
+    """
+    # 1. Load the strategy and validate.
+    with connect() as conn:
+        row = repo.get_strategy(conn, req.strategy_id)
+    if row is None or row["active"] == 0:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    code_path = Path(row["code_path"])
+    if not code_path.exists():
+        raise HTTPException(status_code=410, detail="strategy code file missing on disk")
+    code = code_path.read_text(encoding="utf-8")
+    try:
+        fn = load_validated_strategy(code)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=f"strategy invalid: {e!s}")
+
+    cost_config = _cost_config_from_model(req.cost_config)
+    code_hash = repo.hash_strategy_code(code)
+
+    # 2. Run each ticker. Dedup the input while preserving order.
+    seen: dict[str, None] = {}
+    for t in req.tickers:
+        clean = (t or "").strip().upper()
+        if clean:
+            seen.setdefault(clean, None)
+    tickers = list(seen.keys())
+
+    results: list[MultiTickerResultModel] = []
+    for tk in tickers:
+        try:
+            data = get_prices(
+                ticker=tk, timeframe=req.timeframe,
+                start=_parse_date(req.start), end=_parse_date(req.end),
+            )
+            if data is None or data.empty:
+                results.append(MultiTickerResultModel(
+                    ticker=tk, error="no data for requested window",
+                ))
+                continue
+            result = run_backtest(
+                fn, data, req.params,
+                cost_config=cost_config,
+                starting_capital=req.starting_capital,
+                bars_per_year=req.bars_per_year,
+            )
+            metrics = _metrics_to_dict(compute_metrics(result))
+            equity_list = _series_to_list(result.equity)
+            timestamps = _index_to_iso(result.equity.index)
+            summary = {
+                "cagr": metrics.get("cagr"),
+                "sharpe": metrics.get("sharpe"),
+                "max_drawdown": metrics.get("max_drawdown"),
+                "n_trades": len(result.trades),
+                "win_rate": metrics.get("win_rate"),
+                "final_equity": equity_list[-1] if equity_list else None,
+            }
+            results.append(MultiTickerResultModel(
+                ticker=tk,
+                summary=summary,
+                metrics=metrics,
+                timestamps=timestamps,
+                equity=equity_list,
+            ))
+        except Exception as e:  # noqa: BLE001 — isolate per ticker
+            results.append(MultiTickerResultModel(
+                ticker=tk, error=f"{type(e).__name__}: {e!s}",
+            ))
+
+    # 3. Cross-ticker aggregate.
+    ok = [r for r in results if r.error is None]
+    failed = [r for r in results if r.error is not None]
+
+    def _safe_floats(name: str) -> list[float]:
+        out: list[float] = []
+        for r in ok:
+            v = r.metrics.get(name)
+            if v is None:
+                continue
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            if not (f != f):  # NaN check without importing math here
+                out.append(f)
+        return out
+
+    sharpes = _safe_floats("sharpe")
+    cagrs = _safe_floats("cagr")
+
+    def _mean(xs: list[float]) -> float | None:
+        return sum(xs) / len(xs) if xs else None
+
+    def _median(xs: list[float]) -> float | None:
+        if not xs:
+            return None
+        s = sorted(xs)
+        mid = len(s) // 2
+        return s[mid] if len(s) % 2 == 1 else (s[mid - 1] + s[mid]) / 2
+
+    win_rate = (
+        sum(1 for c in cagrs if c > 0) / len(cagrs)
+        if cagrs else None
+    )
+
+    best_ticker: str | None = None
+    worst_ticker: str | None = None
+    if ok:
+        sortable = [(r.metrics.get("cagr"), r.ticker) for r in ok
+                    if r.metrics.get("cagr") is not None]
+        if sortable:
+            sortable.sort(key=lambda x: x[0], reverse=True)
+            best_ticker = sortable[0][1]
+            worst_ticker = sortable[-1][1]
+
+    aggregate = MultiTickerAggregateModel(
+        n_succeeded=len(ok),
+        n_failed=len(failed),
+        mean_sharpe=_mean(sharpes),
+        median_sharpe=_median(sharpes),
+        mean_cagr=_mean(cagrs),
+        median_cagr=_median(cagrs),
+        win_rate_across_tickers=win_rate,
+        best_ticker=best_ticker,
+        worst_ticker=worst_ticker,
+    )
+
+    return MultiTickerResponse(
+        strategy_id=req.strategy_id,
+        strategy_code_hash=code_hash,
+        results=results,
+        aggregate=aggregate,
+    )
 
 
 # -------- /backtest/event_driven (Phase 9) --------
