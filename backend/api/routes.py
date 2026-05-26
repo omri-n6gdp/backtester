@@ -50,6 +50,10 @@ from backend.api.schemas import (
     BenchmarkCatalogEntry,
     BenchmarkCatalogResponse,
     BenchmarkCurveModel,
+    CacheCompactResponse,
+    CacheEntryModel,
+    CacheEvictRequest,
+    CacheListResponse,
     RunSnapshotsResponse,
     YearSnapshotModel,
     MultiAssetResultModel,
@@ -324,6 +328,38 @@ def _param_stability_to_models(
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", version=VERSION)
+
+
+# -------- /cache/* (Phase 18.2) --------
+
+@router.get("/cache/prices", response_model=CacheListResponse)
+def list_cache_route() -> CacheListResponse:
+    """Phase 18.2 — inspect the local Parquet cache. Returns one row
+    per cached file with size, row count, and last-fetched timestamp."""
+    from backend.data.cache_admin import list_cache_entries
+    return CacheListResponse(
+        entries=[CacheEntryModel(**e) for e in list_cache_entries()],
+    )
+
+
+@router.delete("/cache/prices")
+def evict_cache_route(req: CacheEvictRequest) -> dict[str, Any]:
+    """Phase 18.2 — remove one cached Parquet (and its meta entry).
+    404 if no such file exists."""
+    from backend.data.cache_admin import evict_cache_entry
+    existed = evict_cache_entry(req.timeframe, req.ticker)
+    if not existed:
+        raise HTTPException(status_code=404, detail="cache entry not found")
+    return {"evicted": True, "timeframe": req.timeframe, "ticker": req.ticker}
+
+
+@router.post("/cache/compact", response_model=CacheCompactResponse)
+def compact_cache_route() -> CacheCompactResponse:
+    """Phase 18.2 — recompress every cached Parquet via the data layer's
+    own helpers. Heals fragmentation; safe + idempotent."""
+    from backend.data.cache_admin import compact_cache
+    out = compact_cache()
+    return CacheCompactResponse(**out)
 
 
 @router.get("/benchmarks", response_model=BenchmarkCatalogResponse)

@@ -18,6 +18,7 @@ import {
   validateStrategy, translateStrategy, createStrategy, updateStrategy,
   forkStrategy, getStrategy, setStrategyFavourite,
   getLibrary, getRun, getRunSnapshots, patchRunAnnotations,
+  listCacheEntries, evictCacheEntry, compactCache,
   getT212Account, getT212Positions, getT212Orders, getT212Pies,
   listDeployments, createDeployment, armDeployment, disarmDeployment,
   runDeployment, getDeploymentTracking, getDeploymentRunsFeed,
@@ -1644,6 +1645,156 @@ function AuthorView({ onCancel, onSaved, editingStrategyId = null }) {
     </div>
   `;
 }
+
+// ---- CacheView (Phase 18.2) ----------------------------------------
+//
+// Local Parquet cache admin. Lists every file under ~/.backtester/prices/
+// with size + row count + last-fetched timestamp; per-row Evict; top-of-
+// page Compact. Wraps the same logic the scripts/compact_cache.py CLI
+// uses, but accessible without dropping to a terminal.
+
+function _fmtBytes(n) {
+  if (n == null) return '—';
+  for (const unit of ['B', 'KB', 'MB', 'GB']) {
+    if (n < 1024) return `${n.toFixed(1)} ${unit}`;
+    n /= 1024;
+  }
+  return `${n.toFixed(1)} TB`;
+}
+
+function CacheView({ onClose }) {
+  const pushToast = useToast();
+  const [entries, setEntries] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const body = await listCacheEntries();
+      setEntries(body.entries);
+    } catch (err) {
+      setError(err.message);
+      pushToast('error', `Could not load cache: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const doEvict = async (e) => {
+    if (!window.confirm(`Remove ${e.timeframe}/${e.ticker} from the local cache? It will be re-fetched on the next backtest that uses it.`)) return;
+    setBusy(true);
+    try {
+      await evictCacheEntry(e.timeframe, e.ticker);
+      pushToast('success', `Evicted ${e.timeframe}/${e.ticker}.`);
+      await load();
+    } catch (err) {
+      pushToast('error', `Evict failed: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doCompact = async () => {
+    setBusy(true);
+    try {
+      const r = await compactCache();
+      pushToast(
+        'success',
+        `Compacted ${r.files} file${r.files === 1 ? '' : 's'}: ${_fmtBytes(r.bytes_before)} → ${_fmtBytes(r.bytes_after)}.`,
+      );
+      await load();
+    } catch (err) {
+      pushToast('error', `Compact failed: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const totalBytes = (entries || []).reduce((a, e) => a + (e.size_bytes || 0), 0);
+
+  return html`
+    <div class="p-6 space-y-4">
+      <div class="flex items-baseline justify-between">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-mute-400">Local data</div>
+          <div class="text-lg text-mute-100 font-medium mt-0.5">
+            Parquet cache · ${(entries || []).length} file${(entries || []).length === 1 ? '' : 's'} · ${_fmtBytes(totalBytes)}
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onClick=${doCompact} disabled=${busy || (entries || []).length === 0}
+            class="text-xs px-3 py-1.5 rounded font-medium transition
+                   ${busy || (entries || []).length === 0
+                     ? 'bg-ink-700 text-mute-400 cursor-not-allowed'
+                     : 'bg-ink-800 hover:bg-ink-700 text-mute-100'}">
+            Compact all
+          </button>
+          <button onClick=${load} disabled=${loading}
+            class="text-xs px-2 py-1 text-mute-300 hover:text-mute-100">↻</button>
+          <button onClick=${onClose}
+            class="text-sm text-mute-300 hover:text-mute-100 transition px-2 py-1">
+            ← Back
+          </button>
+        </div>
+      </div>
+
+      <div class="text-xs text-mute-400 leading-relaxed">
+        Files in <span class="num text-mute-200">~/.backtester/prices/</span>. Evict re-fetches the data the next time a backtest needs it (incremental — the engine pulls only the gap). Compact rewrites every file with sorted, deduped contents; safe and idempotent.
+      </div>
+
+      ${error && html`
+        <div class="bg-danger-500/10 border border-danger-500/30 rounded p-3 text-sm text-danger-500">
+          ${error}
+        </div>`}
+
+      ${loading && html`<div class="text-mute-400 text-sm">Loading…</div>`}
+
+      ${!loading && entries && entries.length === 0 && html`
+        <div class="bg-ink-900 border border-ink-700 rounded p-6 text-center text-mute-400 text-sm">
+          No cached files yet. Run a backtest and the engine will populate this view.
+        </div>`}
+
+      ${entries && entries.length > 0 && html`
+        <div class="bg-ink-900 border border-ink-700 rounded overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-ink-700 text-mute-400 text-xs">
+                <th class="py-2 px-3 text-left font-medium">Timeframe</th>
+                <th class="py-2 px-3 text-left font-medium">Ticker</th>
+                <th class="py-2 px-3 text-right font-medium">Size</th>
+                <th class="py-2 px-3 text-right font-medium">Rows</th>
+                <th class="py-2 px-3 text-left font-medium">Last bar</th>
+                <th class="py-2 px-3 text-left font-medium">Last fetched</th>
+                <th class="py-2 px-3 text-right font-medium"></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${entries.map(e => html`
+                <tr key=${`${e.timeframe}:${e.ticker}`} class="border-t border-ink-800">
+                  <td class="py-2 px-3 num text-mute-400">${e.timeframe}</td>
+                  <td class="py-2 px-3 num text-mute-100">${e.ticker}</td>
+                  <td class="py-2 px-3 text-right num text-mute-200">${_fmtBytes(e.size_bytes)}</td>
+                  <td class="py-2 px-3 text-right num text-mute-200">${e.n_rows ?? '—'}</td>
+                  <td class="py-2 px-3 num text-mute-400 text-xs">${e.last_timestamp?.slice(0,10) ?? '—'}</td>
+                  <td class="py-2 px-3 num text-mute-400 text-xs">${e.fetched_at?.slice(0,19).replace('T',' ') ?? '—'}</td>
+                  <td class="py-2 px-3 text-right">
+                    <button onClick=${() => doEvict(e)} disabled=${busy}
+                      class="text-xs text-danger-500 hover:text-danger-400 disabled:opacity-50">Evict</button>
+                  </td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+  `;
+}
+
 
 // ---- EdgeOverTimePanel (Phase 17.3) --------------------------------
 //
@@ -4036,6 +4187,14 @@ function App() {
                      : 'bg-ink-800 hover:bg-ink-700 text-mute-100'}">
             Library
           </button>
+          <button onClick=${() => setView(view === 'cache' ? 'run' : 'cache')}
+            class="px-3 py-1 rounded transition font-medium
+                   ${view === 'cache'
+                     ? 'bg-accent-500 text-ink-950'
+                     : 'bg-ink-800 hover:bg-ink-700 text-mute-100'}"
+            title="Local Parquet cache">
+            Cache
+          </button>
           <div class="flex items-center gap-2">
             <${StatusDot} ok=${serverOk === true} />
             <span class="num">
@@ -4098,6 +4257,8 @@ function App() {
                   }} />`
               : view === 'live'
                 ? html`<${LiveView} onClose=${() => setView('run')} />`
+              : view === 'cache'
+                ? html`<${CacheView} onClose=${() => setView('run')} />`
               : view === 'deploy'
                 ? html`<${DeployView} strategies=${strategies} onClose=${() => setView('run')} />`
               : comparing

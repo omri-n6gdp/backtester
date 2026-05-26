@@ -64,6 +64,27 @@ export async function runSweep(payload) {
   return jsonOrThrow(res);
 }
 
+// ---- Cache admin (Phase 18.2) ------------------------------------------
+
+export async function listCacheEntries() {
+  const res = await fetch(`${API_BASE}/cache/prices`);
+  return jsonOrThrow(res);
+}
+
+export async function evictCacheEntry(timeframe, ticker) {
+  const res = await fetch(`${API_BASE}/cache/prices`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ timeframe, ticker }),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function compactCache() {
+  const res = await fetch(`${API_BASE}/cache/compact`, { method: 'POST' });
+  return jsonOrThrow(res);
+}
+
 export async function getBenchmarkCatalog() {
   // Phase 17.2 — static catalogue of overlay benchmarks.
   const res = await fetch(`${API_BASE}/benchmarks`);

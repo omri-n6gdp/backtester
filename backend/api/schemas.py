@@ -267,6 +267,34 @@ class RunSnapshotsResponse(BaseModel):
     snapshots: list[YearSnapshotModel]
 
 
+# Phase 18.2 — local price-cache admin.
+class CacheEntryModel(BaseModel):
+    """One cached parquet under ~/.backtester/prices/."""
+    timeframe: str
+    ticker: str
+    size_bytes: int
+    n_rows: int | None = None
+    last_timestamp: str | None = None
+    fetched_at: str | None = None
+
+
+class CacheListResponse(BaseModel):
+    entries: list[CacheEntryModel]
+
+
+class CacheEvictRequest(BaseModel):
+    """Body for DELETE /cache/prices."""
+    model_config = ConfigDict(extra="forbid")
+    timeframe: str
+    ticker: str
+
+
+class CacheCompactResponse(BaseModel):
+    files: int
+    bytes_before: int
+    bytes_after: int
+
+
 class StopConfigModel(BaseModel):
     """Mirror of backend.engine.event_driven.StopConfig.
 
