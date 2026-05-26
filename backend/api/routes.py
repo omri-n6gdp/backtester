@@ -1341,7 +1341,7 @@ def run_multi_ticker_route(req: MultiTickerRequest) -> MultiTickerResponse:
     except ValueError as e:
         raise HTTPException(status_code=409, detail=f"strategy invalid: {e!s}")
 
-    cost_config = _cost_config_from_model(req.cost_config)
+    base_cost_config = _cost_config_from_model(req.cost_config)
     code_hash = repo.hash_strategy_code(code)
 
     # 2. Run each ticker. Dedup the input while preserving order.
@@ -1352,8 +1352,21 @@ def run_multi_ticker_route(req: MultiTickerRequest) -> MultiTickerResponse:
             seen.setdefault(clean, None)
     tickers = list(seen.keys())
 
+    # Normalize override keys for case-insensitive lookup.
+    overrides_by_ticker: dict[str, Any] = {
+        (k or "").strip().upper(): v
+        for k, v in (req.cost_overrides or {}).items()
+    }
+
     results: list[MultiTickerResultModel] = []
     for tk in tickers:
+        # Per-ticker effective cost config = base ⊕ override.
+        eff_cost = base_cost_config
+        ov = overrides_by_ticker.get(tk)
+        if ov is not None:
+            ov_fields = ov.model_dump(exclude_unset=True)
+            if ov_fields:
+                eff_cost = dataclasses.replace(base_cost_config, **ov_fields)
         try:
             data = get_prices(
                 ticker=tk, timeframe=req.timeframe,
@@ -1366,7 +1379,7 @@ def run_multi_ticker_route(req: MultiTickerRequest) -> MultiTickerResponse:
                 continue
             result = run_backtest(
                 fn, data, req.params,
-                cost_config=cost_config,
+                cost_config=eff_cost,
                 starting_capital=req.starting_capital,
                 bars_per_year=req.bars_per_year,
             )

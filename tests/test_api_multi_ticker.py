@@ -130,3 +130,64 @@ def test_multi_ticker_rejects_empty_ticker_list(api_client, monkeypatch):
     )
     # Pydantic min_length=1 → 422.
     assert resp.status_code == 422
+
+
+# ---- Phase 18.1 — per-asset cost overrides ----------------------------
+
+
+def test_per_asset_override_visibly_drags_final_equity(api_client, monkeypatch):
+    """A heavy slippage override on one ticker drags its final equity
+    vs the same ticker without overrides; other tickers stay tight."""
+    install_fake_prices(monkeypatch, lambda *_a, **_kw: make_synthetic_ohlcv(n=500))
+    sid = post_strategy(api_client, "SMA", SMA_STRATEGY)
+
+    # No overrides — baseline.
+    base = api_client.post(
+        "/backtest/multi_ticker",
+        json=_payload(sid, ["SPY", "PENNY"]),
+    ).json()
+    by_t = {r["ticker"]: r for r in base["results"]}
+    baseline_penny = by_t["PENNY"]["summary"]["final_equity"]
+    baseline_spy = by_t["SPY"]["summary"]["final_equity"]
+
+    # Override PENNY with much higher slippage; SPY untouched.
+    with_overrides = api_client.post(
+        "/backtest/multi_ticker",
+        json=_payload(sid, ["SPY", "PENNY"], cost_overrides={
+            "PENNY": {"slippage_bps": 200.0},
+        }),
+    ).json()
+    by_t2 = {r["ticker"]: r for r in with_overrides["results"]}
+    overridden_penny = by_t2["PENNY"]["summary"]["final_equity"]
+    overridden_spy = by_t2["SPY"]["summary"]["final_equity"]
+
+    # PENNY paid more in slippage; SPY is unchanged.
+    assert overridden_penny < baseline_penny
+    assert abs(overridden_spy - baseline_spy) < 1e-6
+
+
+def test_override_unknown_field_rejected(api_client, monkeypatch):
+    install_fake_prices(monkeypatch, lambda *_a, **_kw: make_synthetic_ohlcv(n=500))
+    sid = post_strategy(api_client, "SMA", SMA_STRATEGY)
+    resp = api_client.post(
+        "/backtest/multi_ticker",
+        json=_payload(sid, ["SPY"], cost_overrides={
+            "SPY": {"not_a_field": 99},
+        }),
+    )
+    assert resp.status_code == 422
+
+
+def test_override_unknown_ticker_silently_ignored(api_client, monkeypatch):
+    """An override for a ticker that isn't in the list should not error
+    — the user might paste a stale override map."""
+    install_fake_prices(monkeypatch, lambda *_a, **_kw: make_synthetic_ohlcv(n=500))
+    sid = post_strategy(api_client, "SMA", SMA_STRATEGY)
+    resp = api_client.post(
+        "/backtest/multi_ticker",
+        json=_payload(sid, ["SPY"], cost_overrides={
+            "OLD": {"slippage_bps": 100.0},
+        }),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["aggregate"]["n_succeeded"] == 1

@@ -755,6 +755,12 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
               <input class=${ic} value=${multiTicker.tickers}
                 placeholder="SPY, QQQ, GLD, AAPL"
                 onChange=${e => updMT('tickers', e.target.value)} />
+            </${Field}>
+            <${Field} label="Per-ticker cost overrides (JSON)">
+              <textarea rows="2" class="w-full bg-ink-850 border border-ink-700 rounded px-2 py-1.5 text-xs num text-mute-100 focus:outline-none focus:border-accent-500 font-mono resize-none"
+                placeholder='e.g. {"PENNY": {"slippage_bps": 50}}'
+                value=${multiTicker.costOverridesJson ?? '{}'}
+                onChange=${e => updMT('costOverridesJson', e.target.value)} />
             </${Field}>`
           : html`
             <${Field} label="Ticker">
@@ -3580,9 +3586,14 @@ function App() {
   // Phase 17.1 — multi-ticker mode. When enabled, the right rail
   // accepts a comma-separated tickers list and `onRun` dispatches to
   // /backtest/multi_ticker, populating `multiTickerResult`.
+  // Phase 18.1 — `costOverridesJson` is a free-form JSON map keyed by
+  // ticker (e.g. {"PENNY": {"slippage_bps": 50}}) so the user can
+  // give thinly-traded names realistic costs without affecting the
+  // tight ones.
   const [multiTicker, setMultiTicker] = useState({
     enabled: false,
     tickers: 'SPY, QQQ, GLD',
+    costOverridesJson: '{}',
   });
   const [multiTickerResult, setMultiTickerResult] = useState(null);
 
@@ -3767,6 +3778,19 @@ function App() {
           pushToast('error', 'Enter at least one ticker.');
           return;
         }
+        // Phase 18.1 — optional per-ticker cost overrides.
+        let costOverrides = {};
+        try {
+          costOverrides = JSON.parse(multiTicker.costOverridesJson || '{}');
+          if (typeof costOverrides !== 'object' || Array.isArray(costOverrides)) {
+            throw new Error('must be a JSON object keyed by ticker');
+          }
+        } catch (err) {
+          const msg = `Cost overrides JSON is invalid: ${err.message}`;
+          setRunError(msg);
+          pushToast('error', msg);
+          return;
+        }
         const payload = {
           strategy_id: selectedId,
           tickers,
@@ -3775,6 +3799,7 @@ function App() {
           params,
           starting_capital: config.starting_capital,
           cost_config: costConfig,
+          cost_overrides: costOverrides,
         };
         setMultiTickerResult(await runMultiTicker(payload));
         return;

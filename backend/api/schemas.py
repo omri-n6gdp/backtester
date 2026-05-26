@@ -189,6 +189,22 @@ class CostConfigModel(BaseModel):
     bars_per_year: int = 252
 
 
+class CostConfigOverrideModel(BaseModel):
+    """Phase 18.1 — per-asset cost override. All fields are optional;
+    unset fields fall through to the base CostConfig. Used in the
+    multi-ticker path so e.g. SPY can keep tight 5 bps slippage while
+    a thinly-traded ETF gets a more realistic 50 bps."""
+    model_config = ConfigDict(extra="forbid")
+
+    slippage_mode: str | None = None
+    slippage_bps: float | None = None
+    commission_bps: float | None = None
+    spread_bps: float | None = None
+    fx_bps: float | None = None
+    instrument_is_gbp: bool | None = None
+    borrow_bps_annual: float | None = None
+
+
 class BacktestRequest(BaseModel):
     strategy_id: str
     ticker: str
@@ -479,6 +495,12 @@ class MultiTickerRequest(BaseModel):
     end: str
     params: dict[str, Any] = Field(default_factory=dict)
     cost_config: CostConfigModel | None = None
+    # Phase 18.1 — optional per-ticker cost overrides. Keys are tickers
+    # as supplied (case-normalized server-side); each value is a
+    # partial CostConfigOverride that supersedes the base config's
+    # fields for that ticker only. Realistic for multi-ticker runs
+    # that mix tight ETFs with thinly-traded names.
+    cost_overrides: dict[str, CostConfigOverrideModel] = Field(default_factory=dict)
     starting_capital: float = 100_000.0
     bars_per_year: int = 252
 
