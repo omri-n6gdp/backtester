@@ -94,10 +94,57 @@ def test_consistency_normal_case():
 
 # ---- null / missing handling -------------------------------------------
 
-def test_dsr_score_is_always_null_for_now():
+def test_dsr_score_null_when_not_persisted():
+    """Pre-16.1 runs (or runs that didn't request DSR) keep dsr_score=None
+    so the frontend redistributes that weight to available components."""
     rows = [_row()]
     s = compute_run_scores(rows, {"s1": 1}, now=_now())[0]
     assert s.dsr_score is None
+    assert s.dsr is None
+    assert s.sharpe_source == "full"  # no OOS persisted either
+
+
+def test_dsr_score_uses_persisted_value():
+    """Phase 16.1 — when a run carries a persisted DSR, the score is
+    (dsr - 0.5) * 2, clipped below at 0."""
+    row = _row()
+    row["dsr"] = {"dsr": 0.85}
+    s = compute_run_scores([row], {"s1": 1}, now=_now())[0]
+    assert s.dsr == 0.85
+    assert math.isclose(s.dsr_score, 0.70, rel_tol=1e-9)
+
+
+def test_dsr_below_half_floors_at_zero():
+    """A DSR < 0.5 means the strategy is no better than the selection-
+    bias-adjusted null. Score floors at zero."""
+    row = _row()
+    row["dsr"] = {"dsr": 0.3}
+    s = compute_run_scores([row], {"s1": 1}, now=_now())[0]
+    assert s.dsr_score == 0.0
+
+
+def test_sharpe_score_prefers_persisted_oos_sharpe():
+    """Phase 16.1 — when OOS is stored, sharpe_score uses OOS Sharpe
+    rather than full-period. The full-period value is still surfaced
+    on the row for tooltips."""
+    row = _row(sharpe=1.8)
+    row["oos"] = {"out_of_sample": {"metrics": {"sharpe": 0.6}}}
+    s = compute_run_scores([row], {"s1": 1}, now=_now())[0]
+    assert s.sharpe_source == "oos"
+    assert s.oos_sharpe == 0.6
+    assert s.sharpe == 1.8  # raw full-period still surfaced
+    # sharpe_score is OOS-based: 0.6 / 2.0 = 0.3.
+    assert math.isclose(s.sharpe_score, 0.3, rel_tol=1e-9)
+
+
+def test_sharpe_score_falls_back_to_full_when_no_oos():
+    """Without persisted OOS, sharpe_score keeps the pre-16.1 behaviour
+    (full-period Sharpe)."""
+    row = _row(sharpe=1.0)
+    s = compute_run_scores([row], {"s1": 1}, now=_now())[0]
+    assert s.sharpe_source == "full"
+    assert s.oos_sharpe is None
+    assert math.isclose(s.sharpe_score, 0.5, rel_tol=1e-9)
 
 
 def test_nan_metrics_produce_zero_scores():

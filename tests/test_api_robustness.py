@@ -150,3 +150,62 @@ def test_backtest_with_include_regimes_returns_both_axes(api_client, monkeypatch
         windows = regimes["vix_level"]["windows"]
         non_empty = [w for w in windows.values() if w["n_bars"] > 0]
         assert len(non_empty) >= 1
+
+
+# ---- Phase 16.1 — persisted OOS / DSR / MC ----------------------------
+
+
+def test_oos_dsr_mc_round_trip_through_get_run(client_with_strategy):
+    """Submit a backtest with OOS+DSR+MC enabled; the run should round-
+    trip those analyses through /runs/{id}."""
+    client, sid = client_with_strategy
+    resp = client.post("/backtest", json=_payload(
+        sid,
+        oos_split=0.7,
+        n_trials=9,
+        monte_carlo={"n_iterations": 50, "seed": 42},
+    ))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    run_id = body["run_id"]
+    assert body["oos"] is not None
+    assert body["deflated_sharpe"] is not None
+    assert body["monte_carlo"] is not None
+
+    # GET /runs/{id} should rehydrate the same shapes.
+    reloaded = client.get(f"/runs/{run_id}").json()
+    assert reloaded["oos"] is not None
+    assert reloaded["deflated_sharpe"] is not None
+    assert reloaded["monte_carlo"] is not None
+    # OOS Sharpe survives the round trip.
+    assert (reloaded["oos"]["out_of_sample"]["metrics"].get("sharpe")
+            == body["oos"]["out_of_sample"]["metrics"].get("sharpe"))
+
+
+def test_library_uses_persisted_oos_sharpe_and_dsr(client_with_strategy):
+    """A run created with OOS + DSR shows sharpe_source="oos" and a
+    populated dsr field in the library response. A separate run without
+    them stays "full" / null."""
+    client, sid = client_with_strategy
+
+    # Run with OOS + DSR + a different config so it isn't deduped.
+    client.post("/backtest", json=_payload(
+        sid, oos_split=0.7, n_trials=9, end="2012-06-01",
+    ))
+    # Run without (different end date so dedup keeps both).
+    client.post("/backtest", json=_payload(sid, end="2012-07-01"))
+
+    runs = client.get("/library").json()["runs"]
+    # Newest first by created_at — but the second POST may not be strictly
+    # later than the first by clock; sort by start_date for determinism.
+    by_oos = next(r for r in runs if r["sharpe_source"] == "oos")
+    by_full = next(r for r in runs if r["sharpe_source"] == "full")
+
+    # Persisted OOS sharpe drove the score.
+    assert by_oos["oos_sharpe"] is not None
+    assert by_oos["dsr"] is not None
+    assert 0.0 <= by_oos["dsr_score"] <= 1.0
+    # The fallback run keeps the historical behaviour.
+    assert by_full["oos_sharpe"] is None
+    assert by_full["dsr"] is None
+    assert by_full["dsr_score"] is None

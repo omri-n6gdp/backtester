@@ -1605,7 +1605,7 @@ function LibraryView({ onOpenRun, onClose }) {
           `)}
         </div>
         <div class="mt-3 text-[10px] text-mute-400">
-          Weights are relative — they don't need to sum to 100. The DSR component is null until DSR is persisted per run; its weight is redistributed pro rata to available components.
+          Weights are relative — they don't need to sum to 100. Runs created before Phase 16.1 (or without DSR / OOS at request time) carry null component scores there; their weight is redistributed pro rata to the available components. An <span class="text-accent-400">OOS</span> badge in the Sharpe column means the score reflects out-of-sample Sharpe, not full-period.
         </div>
       </div>
 
@@ -1666,10 +1666,13 @@ function LibraryView({ onOpenRun, onClose }) {
                   <td class="py-2 px-3 num text-mute-400 text-xs">${r.start_date.slice(0,10)} → ${r.end_date.slice(0,10)}</td>
                   <td class="py-2 px-3 num text-mute-400 text-xs">${r.created_at?.slice(0,10) ?? '—'}</td>
                   <td class="py-2 px-3 text-right num ${(r.metrics?.cagr ?? 0) > 0 ? 'text-accent-400' : 'text-danger-500'}">${fmtPct(r.metrics?.cagr)}</td>
-                  <td class="py-2 px-3 text-right num text-mute-100">${fmtNum(r.metrics?.sharpe, 2)}</td>
+                  <td class="py-2 px-3 text-right num text-mute-100">
+                    ${fmtNum(r.metrics?.sharpe, 2)}
+                    ${r.sharpe_source === 'oos' && html`<span class="ml-1 text-[9px] text-accent-400 font-semibold align-top" title="Score uses persisted OOS Sharpe (${fmtNum(r.oos_sharpe, 2)})">OOS</span>`}
+                  </td>
                   <td class="py-2 px-3 text-right num text-mute-200">${fmtNum(r.metrics?.calmar, 2)}</td>
                   <td class="py-2 px-3 text-right num text-danger-500">${fmtPct(r.metrics?.max_drawdown)}</td>
-                  <td class="py-2 px-3 text-right num text-accent-400 font-semibold">${(r.score * 100).toFixed(1)}</td>
+                  <td class="py-2 px-3 text-right num text-accent-400 font-semibold" title=${r.dsr !== null && r.dsr !== undefined ? `DSR ${fmtNum(r.dsr, 3)}` : 'DSR not persisted for this run'}>${(r.score * 100).toFixed(1)}</td>
                 </tr>
               `)}
             </tbody>

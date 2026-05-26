@@ -91,13 +91,18 @@ class LibraryRunModel(BaseModel):
     created_at: str
     favourite: bool = False            # the run's strategy is starred
     metrics: dict[str, Any]
-    # Per-component normalized scores in [0, 1]. dsr_score is null for now.
+    # Per-component normalized scores in [0, 1]. `dsr_score` is null when
+    # the run predates Phase 16.1 or DSR wasn't requested at backtest time.
     sharpe_score: float
     calmar_score: float
     consistency_score: float
     dsr_score: float | None
     breadth_score: float
     recency_score: float
+    # Phase 16.1 — provenance + raw values for tooltips.
+    sharpe_source: str = "full"        # "oos" when OOS Sharpe powered sharpe_score
+    dsr: float | None = None           # raw DSR probability in [0, 1]
+    oos_sharpe: float | None = None    # raw OOS Sharpe (annualized)
 
 
 class LibraryResponse(BaseModel):

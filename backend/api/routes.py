@@ -635,6 +635,13 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
     pos_list = _series_to_list(result.positions)
     trades_list = [_trade_to_dict(t) for t in result.trades]
 
+    # Phase 16.1 — serialize the analyses we computed so they reach the
+    # DB. None for analyses the request didn't ask for; the library
+    # ranking falls back gracefully on null.
+    oos_payload = oos_response.model_dump() if oos_response else None
+    dsr_payload = ds_response.model_dump() if ds_response else None
+    mc_payload = mc_response.model_dump() if mc_response else None
+
     with connect() as conn:
         repo.insert_run(
             conn,
@@ -649,6 +656,9 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
             starting_capital=req.starting_capital,
             bars_per_year=req.bars_per_year,
             created_at=created_at,
+            oos_json=json.dumps(oos_payload) if oos_payload is not None else None,
+            dsr_json=json.dumps(dsr_payload) if dsr_payload is not None else None,
+            monte_carlo_json=json.dumps(mc_payload) if mc_payload is not None else None,
         )
         repo.insert_metrics(conn, run_id=run_id, metrics_json=json.dumps(metrics_dict))
         repo.insert_curves(
@@ -1088,6 +1098,9 @@ def library_route(
             dsr_score=s.dsr_score,
             breadth_score=s.breadth_score,
             recency_score=s.recency_score,
+            sharpe_source=s.sharpe_source,
+            dsr=s.dsr,
+            oos_sharpe=s.oos_sharpe,
         )
         for s in scored
     ])
@@ -1412,6 +1425,15 @@ def get_run_route(run_id: str) -> BacktestResponse:
     except Exception:  # noqa: BLE001 — the overlay is best-effort
         buy_hold_list = None
 
+    # Phase 16.1 — rehydrate persisted OOS / DSR / MC if they were
+    # computed at the original request. Old runs still return None.
+    oos_blob = run_row.get("oos_json")
+    dsr_blob = run_row.get("dsr_json")
+    mc_blob = run_row.get("monte_carlo_json")
+    oos_model = OOSResponseModel(**json.loads(oos_blob)) if oos_blob else None
+    dsr_model = DeflatedSharpeResponseModel(**json.loads(dsr_blob)) if dsr_blob else None
+    mc_model = MonteCarloResponseModel(**json.loads(mc_blob)) if mc_blob else None
+
     return BacktestResponse(
         run_id=run_row["id"],
         strategy_id=run_row["strategy_id"],
@@ -1426,9 +1448,9 @@ def get_run_route(run_id: str) -> BacktestResponse:
         raw_positions=curves["raw_positions"],
         positions=curves["positions"],
         trades=trades,
-        oos=None,
-        monte_carlo=None,
-        deflated_sharpe=None,
+        oos=oos_model,
+        monte_carlo=mc_model,
+        deflated_sharpe=dsr_model,
         regimes=None,
     )
 

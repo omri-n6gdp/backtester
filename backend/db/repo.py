@@ -93,17 +93,26 @@ def insert_run(
     starting_capital: float,
     bars_per_year: int,
     created_at: str,
+    oos_json: str | None = None,
+    dsr_json: str | None = None,
+    monte_carlo_json: str | None = None,
 ) -> None:
+    """Phase 16.1 — optional `oos_json`, `dsr_json`, `monte_carlo_json`
+    carry the serialized response models for the OOS split, the
+    deflated-Sharpe analysis, and the Monte Carlo trade-shuffle. They
+    travel as JSON strings so the schema stays opaque to repo callers."""
     conn.execute(
         """
         INSERT INTO runs (
             id, strategy_id, ticker, timeframe, start_date, end_date,
-            params_json, cost_config_json, starting_capital, bars_per_year, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            params_json, cost_config_json, starting_capital, bars_per_year,
+            created_at, oos_json, dsr_json, monte_carlo_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id, strategy_id, ticker, timeframe, start_date, end_date,
-            params_json, cost_config_json, starting_capital, bars_per_year, created_at,
+            params_json, cost_config_json, starting_capital, bars_per_year,
+            created_at, oos_json, dsr_json, monte_carlo_json,
         ),
     )
 
@@ -153,10 +162,13 @@ def insert_trades(conn: sqlite3.Connection, *, run_id: str, trades: list[dict[st
 # -------- reads (Phase 8) --------
 
 def get_run(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
+    """Returns the run row plus the optional Phase 16.1 OOS/DSR/MC
+    JSON blobs (still as strings — callers parse if they need them)."""
     row = conn.execute(
         """
         SELECT id, strategy_id, ticker, timeframe, start_date, end_date,
-               params_json, cost_config_json, starting_capital, bars_per_year, created_at
+               params_json, cost_config_json, starting_capital, bars_per_year,
+               created_at, oos_json, dsr_json, monte_carlo_json
         FROM runs WHERE id = ?
         """,
         (run_id,),
@@ -536,6 +548,7 @@ def list_runs_with_metrics(
                s.favourite AS favourite,
                r.ticker, r.timeframe, r.start_date, r.end_date,
                r.params_json, r.created_at,
+               r.oos_json, r.dsr_json, r.monte_carlo_json,
                m.metrics_json
         FROM runs r
         JOIN strategies s ON s.id = r.strategy_id
@@ -574,6 +587,10 @@ def list_runs_with_metrics(
             "mode": mode,
             "created_at": r["created_at"],
             "metrics": json.loads(r["metrics_json"]),
+            # Phase 16.1 — parsed for the caller; null when not stored.
+            "oos": json.loads(r["oos_json"]) if r["oos_json"] else None,
+            "dsr": json.loads(r["dsr_json"]) if r["dsr_json"] else None,
+            "monte_carlo": json.loads(r["monte_carlo_json"]) if r["monte_carlo_json"] else None,
         })
     return out
 

@@ -23,6 +23,13 @@ CREATE TABLE IF NOT EXISTS runs (
     starting_capital REAL NOT NULL,
     bars_per_year    INTEGER NOT NULL,
     created_at       TEXT NOT NULL,
+    -- Phase 16.1: OOS / DSR / Monte Carlo results persisted alongside
+    -- the run so the library ranking can read real OOS Sharpe + real
+    -- DSR (instead of falling back to full-period Sharpe / null).
+    -- Nullable: old runs and analyses that weren't requested stay null.
+    oos_json         TEXT,
+    dsr_json         TEXT,
+    monte_carlo_json TEXT,
     FOREIGN KEY (strategy_id) REFERENCES strategies(id)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_strategy ON runs(strategy_id);

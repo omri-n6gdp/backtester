@@ -53,6 +53,11 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "strategies": {
         "favourite": "INTEGER NOT NULL DEFAULT 0",  # Phase 15.4
     },
+    "runs": {
+        "oos_json": "TEXT",          # Phase 16.1
+        "dsr_json": "TEXT",          # Phase 16.1
+        "monte_carlo_json": "TEXT",  # Phase 16.1
+    },
 }
 
 
