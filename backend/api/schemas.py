@@ -525,6 +525,25 @@ class DeploymentRunHistoryEntry(BaseModel):
     error: str | None = None
 
 
+class DeploymentRunFeedEntry(DeploymentRunHistoryEntry):
+    """Same as DeploymentRunHistoryEntry plus the deployment's ticker —
+    the cross-deployment notifier feed uses this so a single response
+    carries everything the frontend needs to display a notification
+    without a second lookup."""
+    ticker: str
+
+
+class DeploymentRunFeedResponse(BaseModel):
+    """Phase 14 — order/error notifier feed. The frontend polls this
+    with the highest id it has already shown (`since_id`) so the
+    response only carries fresh rows. `latest_id` is the largest id in
+    the deployment_runs table right now — the frontend uses it as the
+    next `since_id` even when `runs` is empty (so it doesn't refetch
+    old rows after a poll race)."""
+    runs: list[DeploymentRunFeedEntry]
+    latest_id: int
+
+
 class DeploymentTrackingResponse(BaseModel):
     """Expected (backtest) vs actual (orders sent) for a deployment.
 

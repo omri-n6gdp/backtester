@@ -344,6 +344,40 @@ def list_deployment_runs(
     return [dict(r) for r in rows]
 
 
+def list_deployment_runs_since(
+    conn: sqlite3.Connection, *, since_id: int = 0, limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Phase 14 — cross-deployment notifier feed: every run row with
+    id > since_id, latest first, joined with the deployment's ticker so
+    the UI can display "AAPL: ran" without a second lookup. The frontend
+    polls this with the highest id it has already shown so the response
+    only carries fresh rows."""
+    rows = conn.execute(
+        """
+        SELECT r.id, r.deployment_id, r.ran_at, r.status, r.as_of_timestamp,
+               r.intent_count, r.submitted_count, r.error,
+               d.ticker
+        FROM deployment_runs r
+        JOIN deployments d ON d.id = r.deployment_id
+        WHERE r.id > ?
+        ORDER BY r.id DESC
+        LIMIT ?
+        """,
+        (since_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def max_deployment_run_id(conn: sqlite3.Connection) -> int:
+    """Current max id in deployment_runs, or 0 if empty. The frontend
+    uses this on first poll to set the baseline — only fires that
+    happen during the session generate notifications, not a backlog."""
+    row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS m FROM deployment_runs"
+    ).fetchone()
+    return int(row["m"] if row else 0)
+
+
 def insert_order(
     conn: sqlite3.Connection,
     *,

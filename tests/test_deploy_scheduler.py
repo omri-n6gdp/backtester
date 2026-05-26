@@ -412,6 +412,35 @@ def test_disarmed_run_writes_no_history(fresh_db):
         assert repo.list_deployment_runs(conn, dep_id) == []
 
 
+# --- cross-deployment notifier feed (Phase 14) ---------------------------
+
+
+def test_list_runs_since_returns_only_newer_rows(fresh_db):
+    """The notifier feed only returns rows with id > since_id."""
+    dep_id = _seed_deployment(fresh_db, armed=True)
+    with connect() as conn:
+        for status in ("OK", "ERROR", "OK"):
+            repo.insert_deployment_run(
+                conn, deployment_id=dep_id, ran_at="2026-05-26T10:00:00",
+                status=status, as_of_timestamp=None,
+                intent_count=0, submitted_count=0, error=None,
+            )
+        all_rows = repo.list_deployment_runs_since(conn, since_id=0)
+        assert len(all_rows) == 3
+        assert all_rows[0]["ticker"] == "AAPL_US_EQ"   # joined column
+
+        mid_id = all_rows[1]["id"]
+        only_newest = repo.list_deployment_runs_since(conn, since_id=mid_id)
+        assert len(only_newest) == 1
+        assert only_newest[0]["id"] > mid_id
+
+
+def test_max_deployment_run_id_is_zero_when_empty(fresh_db):
+    """The frontend uses this as its baseline on first poll."""
+    with connect() as conn:
+        assert repo.max_deployment_run_id(conn) == 0
+
+
 # --- resolve_price_ticker -------------------------------------------------
 
 

@@ -18,7 +18,8 @@ import {
   getLibrary, getRun,
   getT212Account, getT212Positions, getT212Orders, getT212Pies,
   listDeployments, createDeployment, armDeployment, disarmDeployment,
-  runDeployment, getDeploymentTracking, killSwitch, deleteDeployment,
+  runDeployment, getDeploymentTracking, getDeploymentRunsFeed,
+  killSwitch, deleteDeployment,
 } from './api.js';
 
 const html = htm.bind(React.createElement);
@@ -2468,6 +2469,7 @@ function DeploymentTrackingPanel({ deploymentId, strategies, onBack }) {
 
 function DeployView({ strategies, onClose }) {
   const pushToast = useToast();
+  const acknowledgeRuns = useContext(AcknowledgeRunsContext);
   const [deployments, setDeployments] = useState(null);
   const [listError, setListError] = useState(null);
   const [listLoading, setListLoading] = useState(false);
@@ -2583,6 +2585,12 @@ function DeployView({ strategies, onClose }) {
       const res = await runDeployment(dep.id);
       setRunResult(res);
       await loadDeployments();
+      // Fast-forward the notifier watermark so the toast we just pushed
+      // for this manual run isn't re-pushed by the 30s poller.
+      try {
+        const feed = await getDeploymentRunsFeed(0);
+        acknowledgeRuns(feed.latest_id);
+      } catch { /* poller will catch up next tick */ }
       // Status-aware toast: OK is success, anything else is informational
       // or an error depending on severity.
       if (res.status === 'OK') {
@@ -3011,6 +3019,53 @@ function useToast() {
 }
 
 
+// ---- Deployment notifier (Phase 14) --------------------------------
+//
+// App owns a watermark (lastSeenRunId) and polls /deployments/runs
+// every 30s. For each new row the poller pushes a toast AND fires a
+// browser Notification (if the user has granted permission). The
+// AcknowledgeRunsContext lets DeployView fast-forward the watermark
+// after a manual "Run now" so the manual toast isn't duplicated 30s
+// later by the poller.
+
+const AcknowledgeRunsContext = createContext(() => {});
+
+const NOTIFIER_POLL_MS = 30_000;
+
+// What we say to the user, per status. INSUFFICIENT_CASH is a benign
+// transient (the deployment stays armed); ERROR / CIRCUIT_BREAKER are
+// real failures that warrant the OS notification.
+function _runMessage(row) {
+  const tk = row.ticker || row.deployment_id?.slice(0, 6) || 'deployment';
+  if (row.status === 'OK') {
+    if ((row.submitted_count || 0) > 0) {
+      const n = row.submitted_count;
+      return { kind: 'success', notify: true, text: `${tk}: submitted ${n} order${n === 1 ? '' : 's'}.` };
+    }
+    return { kind: 'info', notify: false, text: `${tk}: ran (no orders needed).` };
+  }
+  if (row.status === 'ERROR') {
+    return { kind: 'error', notify: true, text: `${tk}: error — ${row.error || 'unknown'}` };
+  }
+  if (row.status === 'CIRCUIT_BREAKER') {
+    return { kind: 'error', notify: true, text: `${tk}: circuit breaker — auto-disarmed.` };
+  }
+  if (row.status === 'INSUFFICIENT_CASH') {
+    return { kind: 'warning', notify: true, text: `${tk}: not enough cash to place the order.` };
+  }
+  // NO_DATA and anything else: surface quietly.
+  return { kind: 'info', notify: false, text: `${tk}: ${row.status}` };
+}
+
+function _fireNotification(text) {
+  if (typeof window === 'undefined' || !('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
+  try {
+    new Notification('Backtester', { body: text, tag: 'backtester-deployment' });
+  } catch { /* the OS can reject; toast still covers it */ }
+}
+
+
 // ---- App -----------------------------------------------------------
 
 function App() {
@@ -3108,6 +3163,67 @@ function App() {
       .catch(() => { if (live) setServerOk(false); });
     return () => { live = false; };
   }, []);
+
+  // Deployment notifier (Phase 14). Watermark + browser Notification
+  // permission + 30s poller. Manual "Run now" calls acknowledgeRuns to
+  // skip the duplicate toast 30s later.
+  const lastSeenRunIdRef = useRef(0);
+  const baselineReadyRef = useRef(false);
+  const acknowledgeRuns = useCallback((latestId) => {
+    if (typeof latestId === 'number' && latestId > lastSeenRunIdRef.current) {
+      lastSeenRunIdRef.current = latestId;
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Ask once at startup if the user hasn't decided. Default and denied
+    // are both fine — toast still pops; we just won't fire the OS layer.
+    if (typeof window !== 'undefined' && 'Notification' in window
+        && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => { /* ignore */ });
+    }
+
+    // Set the baseline so we don't notify about runs that happened before
+    // the user opened the app. After the first tick the baseline is the
+    // server's current max id.
+    async function baseline() {
+      try {
+        const body = await getDeploymentRunsFeed(0);
+        if (cancelled) return;
+        lastSeenRunIdRef.current = body.latest_id ?? 0;
+        baselineReadyRef.current = true;
+      } catch { /* server may be down on first load — poller will retry */ }
+    }
+
+    async function tick() {
+      if (!baselineReadyRef.current) {
+        await baseline();
+        return;
+      }
+      try {
+        const body = await getDeploymentRunsFeed(lastSeenRunIdRef.current);
+        if (cancelled) return;
+        // Server returns latest-first; reverse so notifications appear
+        // in chronological order if multiple fired in one window.
+        const rows = (body.runs || []).slice().reverse();
+        for (const row of rows) {
+          const m = _runMessage(row);
+          pushToast(m.kind, m.text);
+          if (m.notify) _fireNotification(m.text);
+        }
+        if (typeof body.latest_id === 'number'
+            && body.latest_id > lastSeenRunIdRef.current) {
+          lastSeenRunIdRef.current = body.latest_id;
+        }
+      } catch { /* keep polling on transient errors */ }
+    }
+
+    baseline();
+    const id = setInterval(tick, NOTIFIER_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [pushToast]);
 
   const refreshStrategies = () => {
     setStratLoading(true);
@@ -3349,6 +3465,7 @@ function App() {
   const showCanvas = !!result;
 
   return html`
+    <${AcknowledgeRunsContext.Provider} value=${acknowledgeRuns}>
     <div class="h-full flex flex-col">
       <header class="h-12 shrink-0 border-b border-ink-700 bg-ink-950 flex items-center px-4 gap-4">
         <div class="text-mute-100 font-semibold tracking-tight">Backtester</div>
@@ -3446,6 +3563,7 @@ function App() {
           onRun=${onRun} running=${running} />`}
       </div>
     </div>
+    </${AcknowledgeRunsContext.Provider}>
   `;
 }
 

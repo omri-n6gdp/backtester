@@ -197,6 +197,16 @@ export async function getDeploymentTracking(id) {
   return jsonOrThrow(res);
 }
 
+export async function getDeploymentRunsFeed(sinceId = 0) {
+  // Phase 14 — cross-deployment notifier feed. Returns runs newer than
+  // sinceId plus the current latest_id so the caller can advance its
+  // watermark even when no new rows arrived.
+  const url = new URL(`${API_BASE}/deployments/runs`);
+  url.searchParams.set('since_id', String(sinceId));
+  const res = await fetch(url.toString());
+  return jsonOrThrow(res);
+}
+
 export async function deleteDeployment(id) {
   const res = await fetch(`${API_BASE}/deployments/${encodeURIComponent(id)}`, {
     method: 'DELETE',

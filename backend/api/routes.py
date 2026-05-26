@@ -25,6 +25,8 @@ from backend.api.schemas import (
     DeploymentCreateRequest,
     DeploymentListResponse,
     DeploymentModel,
+    DeploymentRunFeedEntry,
+    DeploymentRunFeedResponse,
     DeploymentRunHistoryEntry,
     DeploymentRunResponse,
     DeploymentTrackingResponse,
@@ -1547,6 +1549,26 @@ def list_deployments_route(
     with connect() as conn:
         rows = repo.list_deployments(conn, strategy_id=strategy_id, armed_only=armed_only)
     return DeploymentListResponse(deployments=[_deployment_to_model(r) for r in rows])
+
+
+@router.get("/deployments/runs", response_model=DeploymentRunFeedResponse)
+def deployment_runs_feed_route(
+    since_id: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+) -> DeploymentRunFeedResponse:
+    """Phase 14 — cross-deployment fire feed for browser notifications.
+    Returns rows from deployment_runs with id > since_id (newest first)
+    plus the current max id, so the frontend can advance its watermark
+    even when nothing fired during the poll window. Declared BEFORE
+    `/deployments/{deployment_id}` so FastAPI doesn't bind `runs` to
+    the path parameter."""
+    with connect() as conn:
+        rows = repo.list_deployment_runs_since(conn, since_id=since_id, limit=limit)
+        latest_id = repo.max_deployment_run_id(conn)
+    return DeploymentRunFeedResponse(
+        runs=[DeploymentRunFeedEntry(**r) for r in rows],
+        latest_id=latest_id,
+    )
 
 
 @router.get("/deployments/{deployment_id}", response_model=DeploymentModel)

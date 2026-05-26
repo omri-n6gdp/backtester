@@ -311,6 +311,49 @@ def test_tracking_unknown_deployment_404(api_client):
     assert api_client.get("/deployments/nope/tracking").status_code == 404
 
 
+# --- notifier feed (Phase 14) --------------------------------------------
+
+
+def test_runs_feed_returns_new_rows_with_ticker(api_client, monkeypatch):
+    """The cross-deployment feed surfaces fresh fires (id > since_id) and
+    joins through to the deployment's ticker for the notification text."""
+    sid = post_strategy(api_client, "S", _STRATEGY)
+    dep = _create_deployment(api_client, sid).json()
+
+    df = make_synthetic_ohlcv(n=300).copy()
+    df.loc[df.index[-1], "close"] = 200.0
+    monkeypatch.setattr("backend.deploy.scheduler.get_prices", lambda *a, **k: df)
+    monkeypatch.setattr("backend.deploy.scheduler.resolve_price_ticker", lambda t: "AAPL")
+    monkeypatch.setattr("backend.deploy.scheduler.account_fx_factor", lambda t: 1.0)
+    monkeypatch.setattr(t212_client, "get_portfolio", lambda: [])
+    monkeypatch.setattr(t212_client, "get_account_cash", lambda: {"free": 1_000_000.0})
+    monkeypatch.setattr(t212_client, "place_market_order", lambda tk, q: {"id": 9})
+
+    # Fire twice so we have two rows.
+    api_client.post(f"/deployments/{dep['id']}/run")
+    api_client.post(f"/deployments/{dep['id']}/run")
+
+    # Full feed.
+    body = api_client.get("/deployments/runs").json()
+    assert body["latest_id"] >= 2
+    assert len(body["runs"]) == 2
+    # Both rows carry the joined ticker.
+    assert all(r["ticker"] == dep["ticker"] for r in body["runs"])
+    # Latest first.
+    assert body["runs"][0]["id"] > body["runs"][1]["id"]
+
+    # Acknowledge the latest — next poll returns nothing fresh.
+    after = api_client.get(f"/deployments/runs?since_id={body['latest_id']}").json()
+    assert after["runs"] == []
+    assert after["latest_id"] == body["latest_id"]
+
+
+def test_runs_feed_empty_when_no_deployments(api_client):
+    """A fresh DB has no rows and latest_id is 0."""
+    body = api_client.get("/deployments/runs").json()
+    assert body == {"runs": [], "latest_id": 0}
+
+
 # --- max position size (Phase 12.3) --------------------------------------
 
 
