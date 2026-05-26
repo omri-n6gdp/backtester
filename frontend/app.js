@@ -14,7 +14,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 
 import {
   getHealth, listStrategies, runBacktest, runSweep, runEventDriven,
-  runMultiTicker,
+  runMultiTicker, getBenchmarkCatalog,
   validateStrategy, translateStrategy, createStrategy, updateStrategy,
   forkStrategy, getStrategy, setStrategyFavourite,
   getLibrary, getRun, patchRunAnnotations,
@@ -155,11 +155,18 @@ function curveToChartData(timestamps, values) {
   return data;
 }
 
-function EquityChart({ timestamps, equity, buyHold, title }) {
+// Palette for benchmark overlay lines (Phase 17.2). Picked to be
+// distinguishable from the green strategy area + grey buy & hold.
+const BENCHMARK_COLORS = ['#60a5fa', '#f59e0b', '#a78bfa', '#ec4899', '#14b8a6'];
+
+function EquityChart({ timestamps, equity, buyHold, benchmarks, title }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const bhSeriesRef = useRef(null);
+  // Phase 17.2 — one line series per benchmark, keyed by id so we can
+  // diff additions / removals without rebuilding the chart.
+  const benchmarkSeriesRef = useRef({});
 
   useEffect(() => {
     if (!containerRef.current || !LWC) return;
@@ -203,6 +210,7 @@ function EquityChart({ timestamps, equity, buyHold, title }) {
       chartRef.current = null;
       seriesRef.current = null;
       bhSeriesRef.current = null;
+      benchmarkSeriesRef.current = {};
     };
   }, []);
 
@@ -217,19 +225,60 @@ function EquityChart({ timestamps, equity, buyHold, title }) {
     bhSeriesRef.current.setData(curveToChartData(timestamps, buyHold));
   }, [timestamps, buyHold]);
 
+  // Phase 17.2 — sync benchmark overlay series with the current
+  // `benchmarks` prop. Reuses existing series objects when the id
+  // already has one; adds / removes series as the selection changes.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const next = (benchmarks || []).filter(b => !b.error && b.equity && b.equity.length);
+    const seen = new Set(next.map(b => b.id));
+    // Remove series for benchmarks no longer requested.
+    Object.keys(benchmarkSeriesRef.current).forEach(id => {
+      if (!seen.has(id)) {
+        chart.removeSeries(benchmarkSeriesRef.current[id]);
+        delete benchmarkSeriesRef.current[id];
+      }
+    });
+    // Add / update series for each requested benchmark.
+    next.forEach((b, idx) => {
+      let s = benchmarkSeriesRef.current[b.id];
+      if (!s) {
+        s = chart.addSeries(LWC.LineSeries, {
+          color: BENCHMARK_COLORS[idx % BENCHMARK_COLORS.length],
+          lineWidth: 1,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+          priceFormat: { type: 'price', precision: 0, minMove: 1 },
+        });
+        benchmarkSeriesRef.current[b.id] = s;
+      }
+      s.setData(curveToChartData(b.timestamps, b.equity));
+    });
+  }, [benchmarks]);
+
   const hasBuyHold = !!(buyHold && buyHold.some(v => v !== null && v !== undefined));
+  const okBenchmarks = (benchmarks || []).filter(b => !b.error && b.equity && b.equity.length);
 
   return html`
     <div class="relative w-full h-full">
       <div ref=${containerRef} class="w-full h-full"></div>
-      ${hasBuyHold && html`
+      ${(hasBuyHold || okBenchmarks.length > 0) && html`
         <div class="absolute top-1.5 left-2 flex gap-3 text-[10px] text-slate-400
-                    pointer-events-none z-10">
+                    pointer-events-none z-10 flex-wrap max-w-[80%]">
           <span class="flex items-center gap-1">
             <span class="inline-block w-3 h-[2px] bg-accent-500"></span>Strategy</span>
-          <span class="flex items-center gap-1">
-            <span class="inline-block w-3 border-t border-dashed"
-                  style=${{ borderColor: '#6b7280' }}></span>Buy & hold</span>
+          ${hasBuyHold && html`
+            <span class="flex items-center gap-1">
+              <span class="inline-block w-3 border-t border-dashed"
+                    style=${{ borderColor: '#6b7280' }}></span>Buy & hold</span>`}
+          ${okBenchmarks.map((b, idx) => html`
+            <span key=${b.id} class="flex items-center gap-1">
+              <span class="inline-block w-3 border-t border-dashed"
+                    style=${{ borderColor: BENCHMARK_COLORS[idx % BENCHMARK_COLORS.length] }}></span>${b.label}</span>
+          `)}
         </div>`}
     </div>`;
 }
@@ -674,6 +723,7 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
                      costConfig, setCostConfig,
                      eventDriven, setEventDriven,
                      multiTicker, setMultiTicker,
+                     benchmarkCatalog, selectedBenchmarks, setSelectedBenchmarks,
                      onRun, running }) {
   const disabled = !selectedId || running;
   const upd = (k, v) => setConfig(c => ({ ...c, [k]: v }));
@@ -740,6 +790,32 @@ function RightRail({ selectedId, config, setConfig, robustness, setRobustness,
               value=${config.paramsJson ?? '{}'}
               onChange=${e => upd('paramsJson', e.target.value)} />
           </${Field}>
+
+          <!-- Phase 17.2 — overlay benchmarks. Multi-select toggle list. -->
+          ${!multiTicker.enabled && benchmarkCatalog && benchmarkCatalog.length > 0 && html`
+            <div class="pt-1 space-y-2">
+              <div class="text-[10px] uppercase tracking-wider text-mute-400">Benchmark overlays</div>
+              ${benchmarkCatalog.map(b => {
+                const checked = selectedBenchmarks.includes(b.id);
+                return html`
+                  <div key=${b.id} class="flex items-start gap-2">
+                    <input type="checkbox" id=${`bm-${b.id}`} class="accent-accent-500 mt-0.5"
+                      checked=${checked}
+                      onChange=${e => {
+                        if (e.target.checked) {
+                          setSelectedBenchmarks(prev => [...prev, b.id]);
+                        } else {
+                          setSelectedBenchmarks(prev => prev.filter(x => x !== b.id));
+                        }
+                      }} />
+                    <label for=${`bm-${b.id}`} class="text-xs text-mute-200 flex-1 leading-tight">
+                      ${b.label}
+                      <div class="text-[10px] text-mute-500">${b.description}</div>
+                    </label>
+                  </div>`;
+              })}
+            </div>
+          `}
 
           <div class="pt-1 space-y-3">
             <div class="text-[10px] uppercase tracking-wider text-mute-400">Robustness</div>
@@ -3421,6 +3497,18 @@ function App() {
   });
   const [multiTickerResult, setMultiTickerResult] = useState(null);
 
+  // Phase 17.2 — benchmark catalog + selected ids. Catalog is fetched
+  // once on mount.
+  const [benchmarkCatalog, setBenchmarkCatalog] = useState([]);
+  const [selectedBenchmarks, setSelectedBenchmarks] = useState([]);
+  useEffect(() => {
+    let live = true;
+    getBenchmarkCatalog()
+      .then(body => { if (live) setBenchmarkCatalog(body.benchmarks); })
+      .catch(() => { /* the picker is optional — silent failure is fine */ });
+    return () => { live = false; };
+  }, []);
+
   const [running, setRunning] = useState(false);
   // Synchronous double-submit guard. `disabled=${running}` only blocks the
   // button after React re-renders, leaving a window where a fast double-click
@@ -3643,6 +3731,7 @@ function App() {
       if (robustness.dsr && robustness.nTrials) payload.n_trials = parseInt(robustness.nTrials, 10);
       if (robustness.monteCarlo) payload.monte_carlo = { n_iterations: robustness.nShuffles };
       if (robustness.regimes) payload.include_regimes = true;
+      if (selectedBenchmarks.length > 0) payload.benchmarks = selectedBenchmarks;
 
       setResult(await runBacktest(payload));
     } catch (err) {
@@ -3735,7 +3824,8 @@ function App() {
         </div>
         <div class="mt-3 h-[340px] bg-ink-900 border border-ink-700 rounded overflow-hidden">
           <${EquityChart} timestamps=${result.timestamps} equity=${result.equity}
-                          buyHold=${result.buy_hold_equity} />
+                          buyHold=${result.buy_hold_equity}
+                          benchmarks=${result.benchmarks} />
         </div>
       </div>
 
@@ -3916,6 +4006,9 @@ function App() {
           costConfig=${costConfig} setCostConfig=${setCostConfig}
           eventDriven=${eventDriven} setEventDriven=${setEventDriven}
           multiTicker=${multiTicker} setMultiTicker=${setMultiTicker}
+          benchmarkCatalog=${benchmarkCatalog}
+          selectedBenchmarks=${selectedBenchmarks}
+          setSelectedBenchmarks=${setSelectedBenchmarks}
           onRun=${onRun} running=${running} />`}
       </div>
     </div>

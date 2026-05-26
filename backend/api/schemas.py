@@ -203,6 +203,34 @@ class BacktestRequest(BaseModel):
     monte_carlo: MonteCarloConfigModel | None = None
     n_trials: int | None = None
     include_regimes: bool = False
+    # Phase 17.2 — named benchmark IDs to compute alongside the backtest
+    # (e.g. ["spy_bh", "sixty_forty"]). Empty by default so existing
+    # callers get the historical buy_hold_equity overlay unchanged.
+    benchmarks: list[str] = Field(default_factory=list)
+
+
+class BenchmarkCurveModel(BaseModel):
+    """Phase 17.2 — one computed benchmark, ready to overlay on the
+    strategy's equity chart. `error` is set when the benchmark could
+    not be produced (missing data, unknown name)."""
+    id: str
+    label: str
+    timestamps: list[str] = Field(default_factory=list)
+    equity: list[float | None] = Field(default_factory=list)
+    error: str | None = None
+
+
+class BenchmarkCatalogEntry(BaseModel):
+    """Static metadata for one benchmark — exposed via GET /benchmarks
+    so the frontend selector doesn't hardcode labels."""
+    id: str
+    label: str
+    description: str
+    tickers: list[str]
+
+
+class BenchmarkCatalogResponse(BaseModel):
+    benchmarks: list[BenchmarkCatalogEntry]
 
 
 class StopConfigModel(BaseModel):
@@ -543,6 +571,10 @@ class BacktestResponse(BaseModel):
     # Phase 16.3 — user-supplied annotations on this run.
     notes: str | None = None
     tags: list[str] = Field(default_factory=list)
+    # Phase 17.2 — configurable benchmark overlays. Empty when none
+    # were requested; otherwise one entry per requested benchmark
+    # (errors included so the UI can surface them).
+    benchmarks: list[BenchmarkCurveModel] = Field(default_factory=list)
 
 
 # ---------- /deployments (Phase 11.6) ----------

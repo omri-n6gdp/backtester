@@ -41,14 +41,16 @@ def make_synthetic_ohlcv(
 
 
 def install_fake_prices(monkeypatch: pytest.MonkeyPatch, fn: Callable) -> None:
-    """Patch get_prices in both modules that import it by name.
+    """Patch get_prices in every module that imports it by name.
 
-    backend.api.routes imports get_prices at module load (via
-    `from backend.data.prices import get_prices`) and so keeps its own
-    reference. Patching only the data module isn't enough.
+    backend.api.routes / backend.deploy.scheduler / backend.engine.benchmarks
+    all do `from backend.data.prices import get_prices` at module load
+    and so keep their own reference. Patching only the data module is
+    not enough — any of those modules would still see the original.
     """
     monkeypatch.setattr("backend.data.prices.get_prices", fn)
     monkeypatch.setattr("backend.api.routes.get_prices", fn)
+    monkeypatch.setattr("backend.engine.benchmarks.get_prices", fn)
 
 
 def post_strategy(client: TestClient, name: str, code: str, description: str = "") -> str:

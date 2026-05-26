@@ -47,6 +47,9 @@ from backend.api.schemas import (
     KillSwitchResponse,
     MonteCarloConfigModel,
     MonteCarloResponseModel,
+    BenchmarkCatalogEntry,
+    BenchmarkCatalogResponse,
+    BenchmarkCurveModel,
     MultiAssetResultModel,
     MultiTickerAggregateModel,
     MultiTickerRequest,
@@ -319,6 +322,22 @@ def _param_stability_to_models(
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", version=VERSION)
+
+
+@router.get("/benchmarks", response_model=BenchmarkCatalogResponse)
+def benchmark_catalog_route() -> BenchmarkCatalogResponse:
+    """Phase 17.2 — static catalogue of available benchmarks. The
+    frontend uses this to populate its multi-select."""
+    from backend.engine.benchmarks import list_benchmarks
+    return BenchmarkCatalogResponse(
+        benchmarks=[
+            BenchmarkCatalogEntry(
+                id=b.id, label=b.label, description=b.description,
+                tickers=list(b.tickers),
+            )
+            for b in list_benchmarks()
+        ],
+    )
 
 
 # -------- /prices --------
@@ -854,6 +873,22 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
         data["close"].reindex(result.equity.index), req.starting_capital,
     )
 
+    # Phase 17.2 — optional benchmark overlays. Best-effort per
+    # benchmark; errors travel with the curve entry.
+    benchmark_models: list[BenchmarkCurveModel] = []
+    if req.benchmarks:
+        from backend.engine.benchmarks import compute_benchmarks
+        bm_results = compute_benchmarks(
+            req.benchmarks,
+            _parse_date(req.start), _parse_date(req.end),
+            req.starting_capital,
+            target_index=result.equity.index,
+        )
+        benchmark_models = [
+            BenchmarkCurveModel(id=name, **payload)
+            for name, payload in bm_results.items()
+        ]
+
     return BacktestResponse(
         run_id=run_id,
         strategy_id=req.strategy_id,
@@ -873,6 +908,7 @@ def run_backtest_route(req: BacktestRequest) -> BacktestResponse:
         deflated_sharpe=ds_response,
         regimes=regimes_response,
         strategy_code_hash=repo.hash_strategy_code(code),
+        benchmarks=benchmark_models,
     )
 
 # -------- /backtest/walk_forward --------

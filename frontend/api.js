@@ -64,6 +64,12 @@ export async function runSweep(payload) {
   return jsonOrThrow(res);
 }
 
+export async function getBenchmarkCatalog() {
+  // Phase 17.2 — static catalogue of overlay benchmarks.
+  const res = await fetch(`${API_BASE}/benchmarks`);
+  return jsonOrThrow(res);
+}
+
 export async function runMultiTicker(payload) {
   // Phase 17.1 — run a strategy across N tickers in one call.
   const res = await fetch(`${API_BASE}/backtest/multi_ticker`, {
