@@ -30,10 +30,17 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         # Startup: schema migration runs on every boot. CREATE TABLE IF
         # NOT EXISTS keeps it idempotent; safe to run on a populated DB.
         from backend.storage import ensure_dirs
-        from backend.db.conn import migrate
+        from backend.db.conn import migrate, seed_cookbook_strategies
 
         ensure_dirs()
         migrate()
+        # Phase 16.5 — seed worked-example strategies on first boot.
+        # Skipped when running under the test fixture (which calls
+        # `create_app()` without scheduler AND doesn't trigger lifespan
+        # for synchronous TestClients in the same way). Idempotent: a
+        # second startup with the same DB inserts nothing.
+        if with_scheduler:
+            seed_cookbook_strategies()
 
         if with_scheduler:
             from backend.deploy import scheduler

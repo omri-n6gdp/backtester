@@ -111,9 +111,40 @@ def _backfill_strategy_versions(conn: sqlite3.Connection) -> None:
 
 def migrate() -> None:
     """Apply schema.sql, then ALTER-in any columns added to existing tables
-    after their initial CREATE. Idempotent."""
+    after their initial CREATE. Idempotent.
+
+    Schema-only — does not seed strategies. The test suite calls
+    `migrate()` directly and any seeded rows would break empty-state
+    assertions. Production startup also runs `seed_cookbook_strategies()`
+    via the lifespan in `create_app`.
+    """
     schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
     with connect() as conn:
         conn.executescript(schema_sql)
         _ensure_columns(conn)
         _backfill_strategy_versions(conn)
+
+
+def seed_cookbook_strategies() -> int:
+    """Phase 16.5 — insert any missing cookbook strategies. Called from
+    the production lifespan, NOT from `migrate()` (see migrate's
+    docstring). Idempotent: keyed on strategy name. Returns the count
+    inserted. Imported lazily so a missing seeds/ directory never
+    blocks startup."""
+    try:
+        from backend.seeds.cookbook import seed_cookbook
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).exception(
+            "cookbook seeder import failed (non-fatal)"
+        )
+        return 0
+    try:
+        with connect() as conn:
+            return seed_cookbook(conn)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).exception(
+            "cookbook seeder failed (non-fatal)"
+        )
+        return 0

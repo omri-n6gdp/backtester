@@ -1,0 +1,32 @@
+[
+  {
+    "file": "sma_crossover.py",
+    "name": "Cookbook · SMA crossover",
+    "description": "Long when SMA(short) > SMA(long). Classic trend-following starter."
+  },
+  {
+    "file": "rsi_mean_reversion.py",
+    "name": "Cookbook · RSI mean reversion",
+    "description": "Buy when RSI(14) drops below 30; sell when it rises above 70."
+  },
+  {
+    "file": "macd_signal.py",
+    "name": "Cookbook · MACD signal",
+    "description": "Long when MACD line is above its signal line (12/26/9 default)."
+  },
+  {
+    "file": "momentum_12_1.py",
+    "name": "Cookbook · 12-1 momentum",
+    "description": "Long when the trailing 12-month return (skipping the last month) is positive."
+  },
+  {
+    "file": "bollinger_breakout.py",
+    "name": "Cookbook · Bollinger breakout",
+    "description": "Long when close breaks above the upper Bollinger band; flat below the middle."
+  },
+  {
+    "file": "donchian_channel.py",
+    "name": "Cookbook · Donchian channel",
+    "description": "Long on a 20-bar high, exit on a 10-bar low. Classic CTA breakout."
+  }
+]
